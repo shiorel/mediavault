@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media Vault</title>
+<meta name="description" content="Anime, manga, kitap, film ve diziler için kişisel medya arşivi.">
+<meta charset="utf-8">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0b0c11">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=DM+Sans:opsz,wght@9..40,400..700&display=swap">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<div id="app" class="app-shell">
+<aside class="sidebar" id="sidebar">
+<div class="brand"><span class="brand-mark">M</span><div><strong>Media Vault</strong><small>Kişisel arşivin</small></div></div>
+<nav id="nav">
+<button class="nav-item active" data-view="dashboard"><span>⌂</span> Genel Bakış</button>
+<p class="nav-label">KÜTÜPHANE</p>
+<button class="nav-item" data-type="anime"><span>◉</span> Anime <b id="count-anime">0</b></button>
+<button class="nav-item" data-type="manga"><span>◫</span> Manga <b id="count-manga">0</b></button>
+<button class="nav-item" data-type="book"><span>▤</span> Kitap <b id="count-book">0</b></button>
+<button class="nav-item" data-type="movie"><span>▶</span> Film <b id="count-movie">0</b></button>
+<button class="nav-item" data-type="series"><span>▣</span> Dizi <b id="count-series">0</b></button>
+<button class="nav-item" data-type="kdrama"><span>◇</span> K-Drama <b id="count-kdrama">0</b></button>
+<p class="nav-label">KOLEKSİYON</p>
+<button class="nav-item" data-view="favorites"><span>♥</span> Favoriler</button>
+<button class="nav-item" data-view="calendar"><span>◷</span> Yayın Takvimi</button>
+<button class="nav-item" data-view="statistics"><span>▥</span> İstatistikler</button>
+<button class="nav-item" data-view="year"><span>✦</span> Yıllık Özet</button>
+<button class="nav-item" data-view="activity"><span>◴</span> Aktivite Günlüğü</button>
+<button class="nav-item" data-view="recommend"><span>⚄</span> Ne izlesem / okusam?</button>
+<button class="nav-item" data-view="import"><span>⇄</span> İçe / Dışa Aktar</button>
+<button class="nav-item" data-view="settings"><span>⚙</span> Ayarlar</button>
+</nav>
+<div class="sidebar-user"><span id="user-avatar">S</span><div><strong>Yerel arşiv</strong><small id="user-email">Bu tarayıcıda kayıtlı</small></div></div>
+</aside>
+
+<main class="main">
+<header class="topbar">
+<button class="icon-btn menu-btn" id="menu-toggle" aria-label="Menüyü aç">☰</button>
+<div class="global-search"><span>⌕</span><input id="global-search" type="search" placeholder="Arşivinde ara..." autocomplete="off"></div>
+<button class="btn btn-primary" id="add-btn" aria-label="Yeni içerik ekle">＋ Yeni Ekle</button>
+</header>
+<div id="content" class="content"><div class="loading-card"><span class="spinner"></span><p>Arşivin hazırlanıyor…</p></div></div>
+</main>
+</div>
+
+<div id="toast-region" class="toast-region" aria-live="polite"></div>
+<div id="modal-root"></div>
+<input type="file" id="file-input" hidden>
+<script src="./storage.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>
