@@ -54,6 +54,7 @@ if(a==='import-mal')pickFile('mal');
 if(a==='enrich-covers')enrichCovers();
 if(a==='restore-json')pickFile('json');
 if(a==='save-token')saveToken();
+if(a==='remove-token')removeToken();
 return;
 }
 const card=e.target.closest('[data-item-id]'); if(card) openDetail(card.dataset.itemId);
@@ -126,7 +127,7 @@ const drop=$('#mal-drop'); ['dragenter','dragover'].forEach(ev=>drop.addEventLis
 
 function renderSettings(){
 $('#content').innerHTML=`<div class="page-head"><div><span class="eyebrow">YAPILANDIRMA</span><h1>Ayarlar</h1><p>Dış servis bağlantıları ve uygulama bilgileri.</p></div></div><div class="settings-grid">
-<section class="panel"><h2>TMDB bağlantısı</h2><p>Film, dizi ve K-Drama araması için ücretsiz TMDB Read Access Token kullanılır. Token yalnızca bu sekmenin oturumunda tutulur; sekmeyi kapattığında silinir. Kaynak dosyalarına veya GitHub’a gönderilmez.</p><div class="setting-field"><input class="field" id="tmdb-token" type="password" placeholder="eyJhbGciOiJIUzI1NiJ9…"><button class="btn btn-primary" data-action="save-token">Kaydet</button></div><p class="hint">Durum: ${state.config.tmdbConfigured?'<span style="color:var(--green)">Bağlı</span>':'<span style="color:#fbbf24">Token bekleniyor</span>'}</p></section>
+<section class="panel"><h2>TMDB bağlantısı</h2><p>Film, dizi ve K-Drama araması için ücretsiz TMDB Read Access Token kullanılır. Token bu tarayıcının site verilerinde saklanır; Edge’i kapatıp açınca tekrar girmen gerekmez. Tarayıcı site verilerini temizlersen silinir. Kaynak dosyalarına veya GitHub’a gönderilmez.</p><div class="setting-field"><input class="field" id="tmdb-token" type="password" placeholder="eyJhbGciOiJIUzI1NiJ9…"><button class="btn btn-primary" data-action="save-token">Kaydet</button>${state.config.tmdbConfigured?'<button class="btn" data-action="remove-token">Tokenı kaldır</button>':''}</div><p class="hint">Durum: ${state.config.tmdbConfigured?'<span style="color:var(--green)">Bağlı</span>':'<span style="color:#fbbf24">Token bekleniyor</span>'}</p></section>
 <section class="panel"><h2>Gizlilik</h2><p>Site bağlantısı herkese açıktır. Kütüphane yalnızca bu tarayıcının yerel veritabanında saklanır; GitHub’a yüklenmez. Cihazlar arasında otomatik eşitleme yoktur. JSON yedeği ile taşıyabilirsin.</p><p class="hint">Depolama: Bu cihaz · Bu tarayıcı</p></section></div>`;
 }
 
@@ -186,6 +187,7 @@ async function refreshSchedule(){try{toast('Yayın bilgileri güncelleniyor…')
 async function toggleReminder(id,kind,enabled){try{const out=await server('saveReminder',id,kind,enabled);if(out.file)downloadFile(out.file);state.calendar=await server('getCalendarData',120);renderCalendar();toast(enabled?'Takvim dosyası indirildi; takvim uygulamana aktar.':'Hatırlatma kapatıldı.','success')}catch(err){toast(err.message,'error')}}
 
 async function saveToken(){const input=$('#tmdb-token');const token=input.value.trim();if(!token){toast('Token alanı boş.','error');return}try{await server('setTmdbToken',token);state.config.tmdbConfigured=true;input.value='';renderSettings();toast('TMDB bağlantısı kaydedildi.','success')}catch(err){toast(err.message,'error')}}
+async function removeToken(){try{await server('removeTmdbToken');state.config.tmdbConfigured=false;renderSettings();toast('TMDB tokenı bu tarayıcıdan kaldırıldı.','success')}catch(err){toast(err.message,'error')}}
 async function refresh(){const data=await server('getBootstrapData');state.items=data.items||[];state.stats=data.stats||{};state.config=data.config||state.config;document.dispatchEvent(new CustomEvent('mv-items',{detail:state.items}));if(state.view==='calendar')state.calendar=await server('getCalendarData',120);updateCounts();render();}
 function updateCounts(){Object.keys(TYPES).forEach(t=>{const el=$('#count-'+t);if(el)el.textContent=state.items.filter(x=>x.type===t).length})}
 function toast(message,type=''){const el=document.createElement('div');el.className='toast '+type;el.textContent=message;$('#toast-region').appendChild(el);setTimeout(()=>el.remove(),4200)}

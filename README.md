@@ -21,7 +21,7 @@ Kayıtlar bu cihazın bu tarayıcısında **IndexedDB** veritabanına kaydedilir
 
 ## İsteğe bağlı bağlantılar
 
-TMDB Read Access Token **Ayarlar** ekranından; Gemini API anahtarı öneri ekranından girilir. Anahtarlar yalnızca sekmenin oturumunda saklanır, kaynak dosyalarına yazılmaz. Sekme kapatıldığında tekrar girilmelidir. Dış API’lerin erişim, tarayıcı CORS ve kota koşulları değişebilir. Anahtarsız temel kütüphane işlevleri çalışır. Gemini seçilirse tercih başlıkları/puanları/türleri ve aday özetleri Google’a gönderilir. Günlük sınır bu cihaz için geçerlidir.
+TMDB Read Access Token **Ayarlar** ekranından girilir ve bu tarayıcının site verilerinde kalıcı olarak saklanır. Edge kapatılıp açıldığında yeniden girilmesi gerekmez; **Tokenı kaldır** düğmesiyle veya tarayıcının site verileri temizlenerek silinebilir. Önceki sürümde açık sekmede saklanan token, sayfa yenilendiğinde otomatik taşınır. Gemini API anahtarı öneri ekranından girilir ve yalnızca sekmenin oturumunda saklanır. Anahtarlar kaynak dosyalarına yazılmaz. Dış API’lerin erişim, tarayıcı CORS ve kota koşulları değişebilir. Anahtarsız temel kütüphane işlevleri çalışır. Gemini seçilirse tercih başlıkları/puanları/türleri ve aday özetleri Google’a gönderilir. Günlük sınır bu cihaz için geçerlidir.
 
 Apps Script sürümündeki Google Drive yedeği indirme olarak uyarlandı. Drive kapak önbelleği kaldırıldı. Takvim hatırlatması dış takvime doğrudan yazılmaz: indirilen ICS dosyasını takvim uygulamanıza aktarın. Uygulamada hatırlatma işaretini kapatmak dış takvimdeki etkinliği silmez.
 

@@ -7,7 +7,32 @@ const DB_NAME='media-vault:'+location.pathname.replace(/[^/]*$/, '');
 let snapshot={version:2,items:[],activity:[]}, db;
 function localDate_(date){return [date.getFullYear(),String(date.getMonth()+1).padStart(2,'0'),String(date.getDate()).padStart(2,'0')].join('-');}
 const Utilities={getUuid:()=>crypto.randomUUID()};
-const properties={getProperty:key=>key.endsWith('_USAGE')?localStorage.getItem('mv-'+key):sessionStorage.getItem('mv-'+key),setProperty:(key,value)=>key.endsWith('_USAGE')?localStorage.setItem('mv-'+key,value):sessionStorage.setItem('mv-'+key,value),deleteProperty:key=>sessionStorage.removeItem('mv-'+key)};
+const properties={
+ getProperty(key){
+  const name='mv-'+key;
+  if(key==='TMDB_TOKEN'){
+   const saved=localStorage.getItem(name);
+   if(saved)return saved;
+   const previous=sessionStorage.getItem(name);
+   if(previous){localStorage.setItem(name,previous);sessionStorage.removeItem(name);}
+   return previous;
+  }
+  return key.endsWith('_USAGE')?localStorage.getItem(name):sessionStorage.getItem(name);
+ },
+ setProperty(key,value){
+  const name='mv-'+key;
+  if(key==='TMDB_TOKEN'){
+   localStorage.setItem(name,value);
+   sessionStorage.removeItem(name);
+  }else if(key.endsWith('_USAGE'))localStorage.setItem(name,value);
+  else sessionStorage.setItem(name,value);
+ },
+ deleteProperty(key){
+  const name='mv-'+key;
+  if(key==='TMDB_TOKEN'||key.endsWith('_USAGE'))localStorage.removeItem(name);
+  sessionStorage.removeItem(name);
+ }
+};
 const PropertiesService={getScriptProperties:()=>properties};
 const memoryCache=new Map();
 const cache={get:key=>{const x=memoryCache.get(key);if(!x||x.expiry<Date.now()){memoryCache.delete(key);return null;}return x.value;},put:(key,value,ttl)=>{if(memoryCache.size>150)memoryCache.delete(memoryCache.keys().next().value);memoryCache.set(key,{value,expiry:Date.now()+ttl*1000});}};
@@ -48,6 +73,7 @@ function bulkUpsert_(items){items.forEach(validateItem_);let added=0,updated=0,s
 function bulkUpdateItems(ids,patch){const allowed={};for(const key of ['status','score','tags'])if(Object.hasOwn(patch,key))allowed[key]=patch[key];return bulkUpsert_(listItems().filter(x=>ids.includes(x.id)).map(x=>({...x,...allowed})));}
 function getActivityPage(offset=0,limit=50){offset=Math.max(0,Number(offset)||0);limit=Math.max(1,Math.min(100,Number(limit)||50));const entries=structuredClone(snapshot.activity).reverse().slice(offset,offset+limit);return {entries,total:snapshot.activity.length,nextOffset:offset+entries.length};}
 function setTmdbToken(token){token=String(token||'').trim();if(token.length<20)throw new Error('Geçerli bir TMDB Read Access Token gir.');properties.setProperty('TMDB_TOKEN',token);return true;}
+function removeTmdbToken(){properties.deleteProperty('TMDB_TOKEN');return true;}
 function fileName_(ext){return 'media-vault-'+localDate_(new Date())+'-'+Date.now()+'.'+ext;}
 function csvCell_(value){let text=String(value??'');if(/^[=+@\-\t\r]/.test(text))text="'"+text;return '"'+text.replace(/"/g,'""')+'"';}
 function exportLibrary(format){if(format==='json')return {filename:fileName_('json'),mimeType:'application/json',content:JSON.stringify({version:2,exportedAt:new Date().toISOString(),items:listItems()},null,2)};if(format==='csv')return {filename:fileName_('csv'),mimeType:'text/csv;charset=utf-8',content:'\uFEFF'+[HEADERS,...listItems().map(itemToRow_)].map(row=>row.map(csvCell_).join(',')).join('\r\n')};throw new Error('Geçersiz biçim.');}
@@ -417,7 +443,7 @@ return indices.map(i=>ranked[i]);
 
 async function searchRecommendationBooksPage_(query,page){const data=await fetchJson_('https://www.googleapis.com/books/v1/volumes?q='+encodeURIComponent(query)+'&maxResults=12&startIndex='+((page-1)*12)+'&printType=books',{});return (data.items||[]).map(x=>{const v=x.volumeInfo||{};return {type:'book',title:v.title||'',year:yearFromDate_(v.publishedDate),source:'googlebooks',sourceId:String(x.id),externalUrl:v.infoLink||'',imageUrl:v.imageLinks?String(v.imageLinks.thumbnail||'').replace('http://','https://'):'',totalProgress:Number(v.pageCount)||0,metadataJson:JSON.stringify({authors:v.authors||[],categories:v.categories||[],synopsis:v.description||'',isbn:isbnFrom_(v.industryIdentifiers)})};});}
 
-const handlers={getBootstrapData,saveItem,deleteItem,bulkUpdateItems,getActivityPage,setTmdbToken,exportLibrary,createLocalBackup,restoreJsonBackup,importMalXml,getCalendarData,saveReminder,enrichMissingCovers,refreshReleaseData,searchMetadataWithStatus,getPersonalRecommendations,getGeminiRecommendationConfig,setGeminiRecommendationKey,removeGeminiRecommendationKey};
+const handlers={getBootstrapData,saveItem,deleteItem,bulkUpdateItems,getActivityPage,setTmdbToken,removeTmdbToken,exportLibrary,createLocalBackup,restoreJsonBackup,importMalXml,getCalendarData,saveReminder,enrichMissingCovers,refreshReleaseData,searchMetadataWithStatus,getPersonalRecommendations,getGeminiRecommendationConfig,setGeminiRecommendationKey,removeGeminiRecommendationKey};
 const mutations=new Set(['saveItem','deleteItem','bulkUpdateItems','restoreJsonBackup','importMalXml','saveReminder','enrichMissingCovers','refreshReleaseData']);
 let queue=ready;
 window.MediaVault=Object.freeze({call(fn,...args){if(!Object.hasOwn(handlers,fn))return Promise.reject(new Error('İşlem bulunamadı.'));const run=async()=>{
