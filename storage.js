@@ -372,7 +372,8 @@ return (data.data||[]).map(row=>{const x=row.attributes||{};return {type:type,ti
 // Personalized ranking is local and requires no AI key.
 function recommendationGenreKey_(value){const key=titleKey_(value);const aliases={dram:'drama',komedi:'comedy',romantik:'romance',aksiyon:'action',macera:'adventure',fantastik:'fantasy',korku:'horror',gizem:'mystery',gerilim:'thriller','bilim kurgu':'sci fi','sci fi':'sci fi',spor:'sports',muzik:'music','müzik':'music',psikolojik:'psychological','doğaüstü':'supernatural'};return aliases[key]||key;}
 
-function recommendationGenres_(item){const m=parseMetadata_(item);const values=[].concat(Array.isArray(m.genres)?m.genres:[],Array.isArray(m.categories)?m.categories:[],Array.isArray(m.themes)?m.themes:[],Array.isArray(m.demographics)?m.demographics:[],String(item.tags||'').split(','));return [...new Set(values.map(x=>String(x).trim()).filter(Boolean))];}
+function recommendationGenres_(item){const m=parseMetadata_(item);const values=[].concat(Array.isArray(m.genres)?m.genres:[],Array.isArray(m.categories)?m.categories:[],Array.isArray(m.themes)?m.themes:[],Array.isArray(m.demographics)?m.demographics:[],m.recommendationGenre||[],String(item.tags||'').split(','));return [...new Set(values.map(x=>String(x).trim()).filter(Boolean))];}
+function recommendationGenreMatches_(candidate,selected){const candidateKey=recommendationGenreKey_(candidate),selectedKey=recommendationGenreKey_(selected);if(candidateKey===selectedKey)return true;if(selectedKey!=='romance')return false;return /(^| )(romance|romantic|love)( |$)/.test(candidateKey);}
 function recommendationSourceScore_(x){const m=parseMetadata_(x);return Number(m.malScore)||Number(m.tmdbScore)||Number(m.anilistScore)/10||0;}
 // ===== Oneri sistemi v2: profil sinyalleri, AniList etiket/graf, MMR siralama, kalici cache =====
 const REC_WEIGHTS = { content: 0.50, graph: 0.28, bayes: 0.14, gem: 0.08 };
@@ -834,11 +835,14 @@ seen.add(key);
 if (dismissedKeys.has(key) || dismissedTitles.has(x.type + ':' + titleKey_(x.title))) return;
 const meta = parseMetadata_(x);
 if (opts.series && sameSeriesAsLibrary_(x, meta, libKeys, opts.related)) return;
-if (filters.type === 'manhwa' && meta.countryOfOrigin !== 'KR') return;
+// AniList identifies countryOfOrigin; the Jikan-compatible Tenrai fallback does
+// not provide it. Keep known non-Korean titles out, but don't discard every
+// Tenrai candidate merely because its country is unknown.
+if (filters.type === 'manhwa' && String(meta.countryOfOrigin || '').toUpperCase() && String(meta.countryOfOrigin).toUpperCase() !== 'KR') return;
 if (filters.genre) {
 const wanted = recommendationGenreKey_(filters.genre);
-const inGenres = recommendationGenres_(x).some(g => recommendationGenreKey_(g) === wanted);
-const inTags = recommendationTags_(meta).some(t => recommendationGenreKey_(t.name) === wanted);
+const inGenres = recommendationGenres_(x).some(g => recommendationGenreMatches_(g, wanted));
+const inTags = recommendationTags_(meta).some(t => recommendationGenreMatches_(t.name, wanted));
 if (!inGenres && !inTags) return;
 }
 const sourceScore = recommendationSourceScore_(x);
@@ -881,14 +885,14 @@ async function fetchRecommendationCandidates_(type,profile,filters,notes,ctx){ct
 const seeds=((type==='manga'||type==='manhwa')?profile.seeds.filter(x=>x.type==='manga'):profile.seeds).slice(0,2);let results=[];
 if(type==='anime'||type==='manga'||type==='manhwa'){results=await fetchAniListPool_(type,profile,filters,notes,ctx);
 }else if(type==='book'){
-const seed=seeds[0],m=seed?parseMetadata_(seed):{},author=(m.authors||[])[0];const positive=Object.keys(profile.weights).filter(k=>profile.weights[k]>0).sort((a,b)=>profile.weights[b]-profile.weights[a]);const genre=filters.genre||profile.display[positive[0]];const query=author?'inauthor:"'+String(author).replace(/"/g,'')+'"':genre?'subject:'+genre:'fiction';results=(filters.page&&filters.page>1?await searchRecommendationBooksPage_(query,filters.page):await searchBooks_(query)).map(x=>{const meta=typeof x.metadataJson==='object'?x.metadataJson:parseMetadata_(x);if(author&&(meta.authors||[]).some(a=>titleKey_(a)===titleKey_(author)))meta.recommendedAuthor=author;return Object.assign({},x,{metadataJson:JSON.stringify(meta)});});
+const seed=seeds[0],m=seed?parseMetadata_(seed):{},author=(m.authors||[])[0];const positive=Object.keys(profile.weights).filter(k=>profile.weights[k]>0).sort((a,b)=>profile.weights[b]-profile.weights[a]);const genre=filters.genre||profile.display[positive[0]];const query=filters.genre?'subject:'+filters.genre:author?'inauthor:"'+String(author).replace(/"/g,'')+'"':genre?'subject:'+genre:'fiction';results=(filters.page&&filters.page>1?await searchRecommendationBooksPage_(query,filters.page):await searchBooks_(query)).map(x=>{const meta=typeof x.metadataJson==='object'?x.metadataJson:parseMetadata_(x);if(filters.genre)meta.recommendationGenre=filters.genre;if(!filters.genre&&author&&(meta.authors||[]).some(a=>titleKey_(a)===titleKey_(author)))meta.recommendedAuthor=author;return Object.assign({},x,{metadataJson:JSON.stringify(meta)});});
 }else{
 const token=PropertiesService.getScriptProperties().getProperty('TMDB_TOKEN');if(!token){notes.push('Film, dizi ve K-Drama keşfi için Ayarlar’dan ücretsiz TMDB tokenını ekle.');return [];}
 const media=type==='movie'?'movie':'tv',headers={Authorization:'Bearer '+token,accept:'application/json'};
 const recMap=new Map();for(const seed of profile.seeds.filter(s=>s.type===type&&s.source==='tmdb').slice(0,REC_CFG.tmdbSeedCount)){try{const data=await fetchJson_('https://api.themoviedb.org/3/'+media+'/'+encodeURIComponent(seed.sourceId)+'/recommendations?language=tr-TR&page=1',{headers:headers},REC_CFG.rawTtl);const w=Math.max(0.2,profile.seedWeights.get(seed.id)||0.5);(data.results||[]).forEach(x=>{const e=recMap.get(String(x.id))||{x:x,seeds:[]};e.seeds.push({t:seed.title,w:w,r:0});recMap.set(String(x.id),e);});}catch(e){notes.push('Bir TMDB benzerlik kaynağı yanıt vermedi.');}}
 results=[...recMap.values()].map(e=>Object.assign({},e.x,{recommendedFrom:e.seeds[0].t,recSeeds:e.seeds}));
 const genreData=await fetchJson_('https://api.themoviedb.org/3/genre/'+media+'/list?language=tr-TR',{headers:headers},7*86400),genreMap={};(genreData.genres||[]).forEach(g=>genreMap[g.id]=g.name);
-if(!results.length||type==='kdrama'){const preferred=filters.genre||Object.keys(profile.weights).filter(k=>profile.weights[k]>0).sort((a,b)=>profile.weights[b]-profile.weights[a]).map(k=>profile.display[k])[0];const genre=(genreData.genres||[]).find(g=>recommendationGenreKey_(g.name)===recommendationGenreKey_(preferred));const data=await fetchJson_('https://api.themoviedb.org/3/discover/'+media+'?language=tr-TR&include_adult=false&sort_by=vote_count.desc&page='+(filters.page||1)+(genre?'&with_genres='+genre.id:'')+(type==='kdrama'?'&with_original_language=ko':''),{headers:headers});results=results.concat(data.results||[]);}
+if(!results.length||type==='kdrama'||filters.genre){const preferred=filters.genre||Object.keys(profile.weights).filter(k=>profile.weights[k]>0).sort((a,b)=>profile.weights[b]-profile.weights[a]).map(k=>profile.display[k])[0];const genre=(genreData.genres||[]).find(g=>recommendationGenreMatches_(g.name,preferred));const data=await fetchJson_('https://api.themoviedb.org/3/discover/'+media+'?language=tr-TR&include_adult=false&sort_by=vote_count.desc&page='+(filters.page||1)+(genre?'&with_genres='+genre.id:'')+(type==='kdrama'?'&with_original_language=ko':''),{headers:headers});results=results.concat(data.results||[]);}
 results=results.filter(x=>type!=='kdrama'||x.original_language==='ko'||(x.origin_country||[]).includes('KR')).slice(0,24).map(x=>({type:type,title:x.title||x.name,originalTitle:x.original_title||x.original_name||'',year:yearFromDate_(x.release_date||x.first_air_date),source:'tmdb',sourceId:String(x.id),externalUrl:'https://www.themoviedb.org/'+media+'/'+x.id,imageUrl:x.poster_path?'https://image.tmdb.org/t/p/w500'+x.poster_path:'',totalProgress:type==='movie'?1:0,metadataJson:JSON.stringify({genres:(x.genre_ids||[]).map(id=>genreMap[id]).filter(Boolean),synopsis:x.overview||'',tmdbScore:x.vote_average||0,recommendedFrom:x.recommendedFrom||'',recSeeds:x.recSeeds||[],tmdbVotes:x.vote_count||0})}));
 // Limit detail requests; without a duration filter, do not fetch 24 detail pages.
 if(filters.maxMinutes)results=await Promise.all(results.slice(0,10).map(async x=>{try{const detail=await fetchJson_('https://api.themoviedb.org/3/'+media+'/'+x.sourceId+'?language=tr-TR',{headers:headers});updateMetadata_(x,{durationMinutes:Number(detail.runtime||(detail.episode_run_time||[])[0]||0)});x.totalProgress=type==='movie'?1:Number(detail.number_of_episodes)||0;}catch(e){}return x;}));
@@ -969,7 +973,7 @@ if (isLibrary) {
 candidates = existing.filter(x => x.type === (type === 'manhwa' ? 'manga' : type) && ['planned', 'in_progress', 'on_hold'].includes(x.status));
 } else {
 const tokenState = Boolean(PropertiesService.getScriptProperties().getProperty('TMDB_TOKEN'));
-const key = 'pool-v2:' + type + ':' + recommendationFingerprint_(type, profile) + ':' + filters.genre + ':d' + Boolean(filters.maxMinutes) + ':t' + tokenState;
+const key = 'pool-v3:' + type + ':' + recommendationFingerprint_(type, profile) + ':' + filters.genre + ':d' + Boolean(filters.maxMinutes) + ':t' + tokenState;
 const hit = await pcache.get(key);
 if (hit && Array.isArray(hit.items)) {
 candidates = hit.items;
