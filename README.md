@@ -8,6 +8,12 @@ Siteyi açıp **Yeni Ekle** ile içerik ekleyin. Başlığı yazınca ücretsiz 
 
 Kayıtlar bu cihazın bu tarayıcısında **IndexedDB** veritabanına kaydedilir. Site herkese açıktır, kişisel kütüphaneler GitHub’a gönderilmez. Otomatik cihaz eşitleme veya Google hesabıyla giriş yoktur. Başka cihaza taşımak için **İçe / Dışa Aktar → Tam yedek** dosyasını indirin, hedef cihazda JSON içe aktarın. Tarayıcı site verilerini silmek kayıtları da siler; düzenli yedek alın.
 
+## Öneri sistemi notları
+
+- AniList etiketleri kayıt eklenirken saklanır; eski kayıtlar için “Ne izlesem / okusam?” ekranı açılınca eksik etiketler arka planda tamamlanır (kayıt tarihini ve aktivite günlüğünü değiştirmez).
+- Dış API cevapları IndexedDB’de önbelleklenir (ham cevaplar 3 gün, aday havuzu 24 saat). AniList istekleri dakikada yaklaşık 65 ile sınırlanır. Önbellek yedeğe girmez; **“İlgilenmiyorum” listesi** tam yedeğe ve JSON dışa aktarmaya dahildir. Ekrandaki “Öneri önbelleğini temizle” düğmesiyle sıfırlanabilir.
+- “Benzer ↔ Keşfet” kaydırıcısı yalnızca sıralamadaki çeşitliliği değiştirir, yeni istek atmaz.
+
 ## Desteklenen işlevler
 
 - Kayıt ekleme, düzenleme, silme; favoriler, puanlar, ilerleme ve toplu düzenleme.
@@ -17,6 +23,7 @@ Kayıtlar bu cihazın bu tarayıcısında **IndexedDB** veritabanına kaydedilir
 - İstatistikler, yıllık özet ve paylaşılabilir özet görseli.
 - AniList/Jikan/Kitsu, Google Books/Open Library, TMDB ve ücretsiz yedek kaynaklarla metadata arama.
 - Kişiselleştirilmiş keşif ve planlanan içeriklerden öneri.
+- Öneri sistemi: puanların kendi ortalamana göre normalize edildiği, bırakılanların ve “İlgilenmiyorum” denenlerin negatif sinyal sayıldığı, son kayıtların daha ağır bastığı bir zevk profili; AniList etiketleri (nadir etiketlere daha çok ağırlık), kullanıcı oylu “benzer başlıklar” grafı, aynı yazar/stüdyo adayları, Bayes düzeltmeli kaynak puanı ve MMR ile çeşitlendirme. Her önerinin altında nedeni yazar. Hepsi ücretsiz ve tarayıcıda çalışır; Gemini isteğe bağlı kalır.
 - Yayın takvimi; takvim uygulamasına aktarılabilen ICS hatırlatmaları.
 
 ## İsteğe bağlı bağlantılar

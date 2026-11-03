@@ -53,7 +53,7 @@ async function fetchWithRetry_(url,options={}){
  }
  throw new Error('Dış servis yanıt vermedi.');
 }
-async function fetchJson_(url,options={}){const key=cacheKey_(url+JSON.stringify(options));const hit=readCache_(cache,key);if(hit!==null)return hit;const response=await fetchWithRetry_(url,options);const json=JSON.parse(response.getContentText());if(json.errors)throw new Error('Servis veriyi sağlayamadı.');putCache_(cache,key,json,600);return json;}
+async function fetchJson_(url,options={},ttl){const key=cacheKey_(url+JSON.stringify(options));const hit=readCache_(cache,key);if(hit!==null)return hit;const persistent=ttl>600,pkey='http:'+url;if(persistent){const stored=await pcache.get(pkey);if(stored){putCache_(cache,key,stored,600);return stored;}}const response=await fetchWithRetry_(url,options);const json=JSON.parse(response.getContentText());if(json.errors)throw new Error('Servis veriyi sağlayamadı.');putCache_(cache,key,json,600);if(persistent)await pcache.set(pkey,json,ttl);return json;}
 const ready=new Promise((resolve,reject)=>{
  const request=indexedDB.open(DB_NAME,1);
  request.onupgradeneeded=()=>request.result.createObjectStore('vault');
@@ -76,9 +76,10 @@ function setTmdbToken(token){token=String(token||'').trim();if(token.length<20)t
 function removeTmdbToken(){properties.deleteProperty('TMDB_TOKEN');return true;}
 function fileName_(ext){return 'media-vault-'+localDate_(new Date())+'-'+Date.now()+'.'+ext;}
 function csvCell_(value){let text=String(value??'');if(/^[=+@\-\t\r]/.test(text))text="'"+text;return '"'+text.replace(/"/g,'""')+'"';}
-function exportLibrary(format){if(format==='json')return {filename:fileName_('json'),mimeType:'application/json',content:JSON.stringify({version:2,exportedAt:new Date().toISOString(),items:listItems()},null,2)};if(format==='csv')return {filename:fileName_('csv'),mimeType:'text/csv;charset=utf-8',content:'\uFEFF'+[HEADERS,...listItems().map(itemToRow_)].map(row=>row.map(csvCell_).join(',')).join('\r\n')};throw new Error('Geçersiz biçim.');}
+function exportLibrary(format){if(format==='json')return {filename:fileName_('json'),mimeType:'application/json',content:JSON.stringify({version:2,exportedAt:new Date().toISOString(),items:listItems(),dismissed:Array.isArray(snapshot.dismissed)?snapshot.dismissed:[]},null,2)};if(format==='csv')return {filename:fileName_('csv'),mimeType:'text/csv;charset=utf-8',content:'\uFEFF'+[HEADERS,...listItems().map(itemToRow_)].map(row=>row.map(csvCell_).join(',')).join('\r\n')};throw new Error('Geçersiz biçim.');}
 function createLocalBackup(){return {filename:fileName_('json'),mimeType:'application/json',content:JSON.stringify({...snapshot,exportedAt:new Date().toISOString()},null,2)};}
-function restoreJsonBackup(text){let data;try{data=JSON.parse(text);}catch{throw new Error('JSON dosyası okunamadı.');}const items=Array.isArray(data)?data:data?.items;if(!Array.isArray(items))throw new Error('Yedekte items listesi yok.');const result=bulkUpsert_(items);if(Array.isArray(data.activity)){const ids=new Set(snapshot.activity.map(x=>x.id));for(const row of data.activity)if(row&&typeof row.id==='string'&&!ids.has(row.id)){snapshot.activity.push(row);ids.add(row.id);}}return {...result,total:items.length};}
+function restoreJsonBackup(text){let data;try{data=JSON.parse(text);}catch{throw new Error('JSON dosyası okunamadı.');}const items=Array.isArray(data)?data:data?.items;if(!Array.isArray(items))throw new Error('Yedekte items listesi yok.');const result=bulkUpsert_(items);if(Array.isArray(data.activity)){const ids=new Set(snapshot.activity.map(x=>x.id));for(const row of data.activity)if(row&&typeof row.id==='string'&&!ids.has(row.id)){snapshot.activity.push(row);ids.add(row.id);}}if(!Array.isArray(data)&&Array.isArray(data.dismissed)){snapshot.dismissed=Array.isArray(snapshot.dismissed)?snapshot.dismissed:[];const have=new Set(snapshot.dismissed.map(d=>d.key));for(const d of data.dismissed){if(d&&typeof d.key==='string'&&!have.has(d.key)){snapshot.dismissed.push({key:d.key.slice(0,300),tk:String(d.tk||'').slice(0,200),type:String(d.type||''),title:String(d.title||'').slice(0,200),genres:Array.isArray(d.genres)?d.genres.slice(0,12).map(String):[],tags:Array.isArray(d.tags)?d.tags.slice(0,15).filter(Array.isArray).map(t=>[String(t[0]),Number(t[1])||0]):[],at:String(d.at||'')});have.add(d.key);}}}
+return {...result,total:items.length};}
 function importMalXml(text){const doc=new DOMParser().parseFromString(text,'application/xml');if(doc.querySelector('parsererror'))throw new Error('MAL XML dosyası geçersiz.');const rows=[...doc.querySelectorAll('myanimelist > anime, myanimelist > manga')];if(!rows.length)throw new Error('XML içinde anime veya manga kaydı yok.');const items=rows.map(node=>{const type=node.tagName,get=key=>node.querySelector(key)?.textContent||'',anime=type==='anime',id=get(anime?'series_animedb_id':'manga_mangadb_id'),statuses={'1':'in_progress','2':'completed','3':'on_hold','4':'dropped','6':'planned',Watching:'in_progress',Reading:'in_progress',Completed:'completed','On-Hold':'on_hold',Dropped:'dropped','Plan to Watch':'planned','Plan to Read':'planned'};return {type,title:get(anime?'series_title':'manga_title'),source:'jikan',sourceId:id,externalUrl:'https://myanimelist.net/'+type+'/'+id,status:statuses[get('my_status')]||'planned',score:Number(get('my_score'))||0,progress:Number(get(anime?'my_watched_episodes':'my_read_chapters'))||0,totalProgress:Number(get(anime?'series_episodes':'manga_chapters'))||0,tags:get('my_tags'),notes:get('my_comments'),metadataJson:{malId:id,importedFrom:'MyAnimeList',completedAt:validCompletionDate_(get('my_finish_date'))}};});return {...bulkUpsert_(items),total:items.length};}
 function saveReminder(id,kind,enabled){if(!['episode','season'].includes(kind))throw new Error('Geçersiz hatırlatma.');const item=getItem(id);if(!item)throw new Error('Kayıt bulunamadı.');const meta=parseMetadata_(item),flag=kind==='episode'?'reminderEpisode':'reminderSeason';let file=null;if(enabled){const date=new Date(kind==='episode'?(meta.nextAirDate||meta.nextEpisodeDate):meta.nextSeasonDate);if(isNaN(date))throw new Error('Yayın tarihi bulunamadı.');const stamp=d=>d.toISOString().replace(/[-:]/g,'').replace(/\.\d{3}Z/,'Z'),escape=s=>String(s).replace(/\\/g,'\\\\').replace(/\n/g,'\\n').replace(/[,;]/g,m=>'\\'+m);const uid=item.id+'-'+kind+'@mediavault';file={filename:'media-vault-'+kind+'.ics',mimeType:'text/calendar;charset=utf-8',content:['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Media Vault//TR','BEGIN:VEVENT','UID:'+uid,'DTSTAMP:'+stamp(new Date()),'DTSTART:'+stamp(date),'DTEND:'+stamp(new Date(date.getTime()+3600000)),'SUMMARY:'+escape((kind==='episode'?'Yeni bölüm: ':'Yeni sezon: ')+item.title),'BEGIN:VALARM','TRIGGER:-PT1H','ACTION:DISPLAY','DESCRIPTION:Media Vault hatırlatması','END:VALARM','END:VEVENT','END:VCALENDAR',''].join('\r\n')};}meta[flag]=!!enabled;item.metadataJson=JSON.stringify(meta);saveItem(item);return {item,file};}
 async function enrichMissingCovers(){let updated=0,failed=0;const missing=listItems().filter(x=>['anime','manga'].includes(x.type)&&!x.imageUrl).slice(0,30);for(const item of missing){try{const out=await searchMetadataRaw_(item.title,item.type);const match=out.items.find(x=>sameMedia_(item,x));if(match?.imageUrl){item.imageUrl=match.imageUrl;item.originalTitle=item.originalTitle||match.originalTitle;item.year=item.year||match.year;item.totalProgress=item.totalProgress||match.totalProgress;updateMetadata_(item,match.metadataJson);saveItem(item);updated++;}}catch{failed++;}}return {updated,failed,remaining:listItems().filter(x=>['anime','manga'].includes(x.type)&&!x.imageUrl).length};}
@@ -255,7 +256,7 @@ async function searchItunesMovies_(query){
   return (data.results||[]).filter(x=>x.trackId&&x.trackName).map(x=>({type:'movie',title:x.trackName||'',originalTitle:'',year:yearFromDate_(x.releaseDate),imageUrl:x.artworkUrl100||'',source:'itunes',sourceId:String(x.trackId),externalUrl:x.trackViewUrl||'',totalProgress:1,metadataJson:{synopsis:x.longDescription||x.shortDescription||'',genres:x.primaryGenreName?[x.primaryGenreName]:[],attribution:'Apple iTunes',fallback:true}}));
 }
 async function searchAniList_(query, type) {
-const gql = 'query($search:String,$type:MediaType){Page(page:1,perPage:12){media(search:$search,type:$type,sort:SEARCH_MATCH){id idMal title{romaji english native} coverImage{extraLarge large} startDate{year} episodes chapters duration status averageScore description(asHtml:false) genres siteUrl nextAiringEpisode{airingAt episode}}}}';
+const gql = 'query($search:String,$type:MediaType){Page(page:1,perPage:12){media(search:$search,type:$type,sort:SEARCH_MATCH){id idMal title{romaji english native} coverImage{extraLarge large} startDate{year} episodes chapters duration status averageScore description(asHtml:false) genres popularity tags{name rank isMediaSpoiler} siteUrl nextAiringEpisode{airingAt episode}}}}';
 const response = await fetchWithRetry_('https://graphql.anilist.co', { method: 'post', contentType: 'application/json', muteHttpExceptions: true, payload: JSON.stringify({ query: gql, variables: { search: query, type: type === 'anime' ? 'ANIME' : 'MANGA' } }) });
 if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) throw new Error('AniList araması şu anda yanıt vermiyor.');
 const json = JSON.parse(response.getContentText());
@@ -267,7 +268,7 @@ type: type, title: x.title.english || x.title.romaji || x.title.native || '',
 originalTitle: x.title.native || x.title.romaji || '', year: Number((x.startDate || {}).year || 0),
 imageUrl: (x.coverImage || {}).extraLarge || (x.coverImage || {}).large || '', source: 'anilist',
 sourceId: String(x.idMal || x.id), externalUrl: x.siteUrl || '', totalProgress: Number(type === 'anime' ? x.episodes : x.chapters) || 0,
-metadataJson: { malId:x.idMal||'',anilistId:x.id||'',titleAliases:Object.values(x.title||{}).filter(Boolean),synopsis: x.description || '', genres: x.genres || [], mediaStatus: x.status || '', durationMinutes: Number(x.duration || 0), anilistScore: Number(x.averageScore || 0), nextAirDate: next, nextEpisode: Number((x.nextAiringEpisode || {}).episode || 0), nextSeason: 0 }
+metadataJson: { malId:x.idMal||'',anilistId:x.id||'',titleAliases:Object.values(x.title||{}).filter(Boolean),synopsis: x.description || '', genres: x.genres || [], mediaStatus: x.status || '', durationMinutes: Number(x.duration || 0), anilistScore: Number(x.averageScore || 0), anilistTags: alTags_(x.tags), anilistPopularity: Number(x.popularity || 0), nextAirDate: next, nextEpisode: Number((x.nextAiringEpisode || {}).episode || 0), nextSeason: 0 }
 };
 });
 }
@@ -373,59 +374,657 @@ return (data.data||[]).map(row=>{const x=row.attributes||{};return {type:type,ti
 function recommendationGenreKey_(value){const key=titleKey_(value);const aliases={dram:'drama',komedi:'comedy',romantik:'romance',aksiyon:'action',macera:'adventure',fantastik:'fantasy',korku:'horror',gizem:'mystery',gerilim:'thriller','bilim kurgu':'sci fi','sci fi':'sci fi',spor:'sports',muzik:'music','müzik':'music',psikolojik:'psychological','doğaüstü':'supernatural'};return aliases[key]||key;}
 
 function recommendationGenres_(item){const m=parseMetadata_(item);const values=[].concat(Array.isArray(m.genres)?m.genres:[],Array.isArray(m.categories)?m.categories:[],String(item.tags||'').split(','));return [...new Set(values.map(x=>String(x).trim()).filter(Boolean))];}
-function recommendationWeight_(x){if(x.status==='dropped')return -2.5;if(Number(x.score)>0&&Number(x.score)<=4)return -2;return (x.favorite?3:0)+(Number(x.score)>=7?(Number(x.score)-6):0)+(x.status==='completed'?0.5:0);}
-function recommendationProfile_(items,type){const scoped=items.filter(x=>!type||(Array.isArray(type)?type.includes(x.type):x.type===type)),weights={},display={};scoped.forEach(x=>{const weight=recommendationWeight_(x);recommendationGenres_(x).forEach(g=>{const key=recommendationGenreKey_(g);weights[key]=(weights[key]||0)+weight;display[key]=g;});});return {weights:weights,display:display,seeds:scoped.filter(x=>recommendationWeight_(x)>0).sort((a,b)=>recommendationWeight_(b)-recommendationWeight_(a)),count:scoped.length};}
 function recommendationSourceScore_(x){const m=parseMetadata_(x);return Number(m.malScore)||Number(m.tmdbScore)||Number(m.anilistScore)/10||0;}
-function recommendationRank_(item,profile){const matched=recommendationGenres_(item).map(g=>({genre:g,weight:profile.weights[recommendationGenreKey_(g)]||0}));let affinity=matched.reduce((n,g)=>n+g.weight,0)/Math.sqrt(Math.max(1,matched.length));const meta=parseMetadata_(item);const positive=matched.filter(g=>g.weight>0).sort((a,b)=>b.weight-a.weight).slice(0,3).map(g=>g.genre);const reason=meta.recommendedFrom?'“'+meta.recommendedFrom+'” için kaynakta benzer içerik olarak listeleniyor.':positive.length?'Yüksek puan verdiğin veya favorilediğin içeriklerle ortak türler: '+positive.join(', ')+'.':meta.recommendedAuthor?'Sevdiğin içerikteki yazarla eşleşen kitap: '+meta.recommendedAuthor+'.':'Henüz yeterli tercih verisi yok; kaynakta keşfedilebilen bir içerik.';return {item:item,rank:affinity+recommendationSourceScore_(item)*0.3+(meta.recommendedFrom?2:0)+(meta.recommendedAuthor?2:0),reason:reason,sourceScore:recommendationSourceScore_(item)};}
-function filterRecommendationCandidates_(candidates,existing,filters,profile){const unique=[];candidates.forEach(x=>{if(!x||!x.title||duplicateItem_(x,existing,'')||duplicateItem_(x,unique,''))return;const meta=parseMetadata_(x),duration=Number(meta.durationMinutes)||0,score=recommendationSourceScore_(x);if(filters.genre&&!recommendationGenres_(x).some(g=>recommendationGenreKey_(g)===recommendationGenreKey_(filters.genre)))return;if(filters.maxMinutes&&(!duration||duration>filters.maxMinutes))return;if(filters.minScore&&score<filters.minScore)return;unique.push(x);});return unique.map(x=>recommendationRank_(x,profile)).sort((a,b)=>b.rank-a.rank);}
-async function getPersonalRecommendations(input){
-input=input||{};const type=String(input.type||'anime');if(!['anime','manga','manhwa','movie','series','kdrama','book'].includes(type))throw new Error('Kategori seçin.');
-const filters={type:type,genre:String(input.genre||'').slice(0,100),maxMinutes:Math.max(0,Math.min(10000,Number(input.maxMinutes)||0)),minScore:Math.max(0,Math.min(10,Number(input.minScore)||0))};
-const existing=listItems({}),readingSources=type==='manga'||type==='manhwa'?existing.filter(x=>['manga','book'].includes(x.type)&&['completed','in_progress','on_hold'].includes(x.status)):existing,profile=recommendationProfile_(readingSources,type==='manga'||type==='manhwa'?null:type),notes=[];let candidates=[];
-if(input.scope==='library'){candidates=existing.filter(x=>x.type===(type==='manhwa'?'manga':type)&&['planned','in_progress','on_hold'].includes(x.status));}
+// ===== Oneri sistemi v2: profil sinyalleri, AniList etiket/graf, MMR siralama, kalici cache =====
+const REC_WEIGHTS = { content: 0.50, graph: 0.28, bayes: 0.14, gem: 0.08 };
+const REC_CFG = {
+seedCount: 12, tmdbSeedCount: 8, minTagRank: 40, halfLifeYears: 1.5, recencyFloor: 0.25,
+favoriteBoost: 1.5, dismissPenalty: -0.5, droppedWeight: -1.5, fewScoresMin: 10,
+anilistGapMs: 900, rawTtl: 3 * 86400, poolTtl: 24 * 3600, workBudgetMs: 40000, listSize: 30
+};
+const SERIES_RELS = new Set(['SEQUEL', 'PREQUEL', 'SIDE_STORY', 'SPIN_OFF', 'PARENT', 'ALTERNATIVE', 'SUMMARY']);
+const AL_GENRES = ['Action', 'Adventure', 'Comedy', 'Drama', 'Ecchi', 'Fantasy', 'Horror', 'Mahou Shoujo', 'Mecha', 'Music', 'Mystery', 'Psychological', 'Romance', 'Sci-Fi', 'Slice of Life', 'Sports', 'Supernatural', 'Thriller'];
+const AL_FIELDS = 'id idMal format countryOfOrigin title{romaji english native} coverImage{large} startDate{year} episodes chapters duration averageScore popularity genres tags{name rank isMediaSpoiler} description(asHtml:false) siteUrl';
+const AL_FIELDS_LITE = 'id idMal format countryOfOrigin title{romaji english native} coverImage{large} startDate{year} episodes chapters duration averageScore popularity genres siteUrl';
+const Q_SEED = 'query($id:Int,$mal:Int,$type:MediaType){Media(id:$id,idMal:$mal,type:$type){id idMal relations{edges{relationType node{id idMal}}} recommendations(sort:RATING_DESC,perPage:10){nodes{rating mediaRecommendation{' + AL_FIELDS + '}}}}}';
+const Q_POOL = 'query($type:MediaType,$genre:[String],$tag:[String],$page:Int,$country:CountryCode,$sort:[MediaSort],$pop:Int){Page(page:$page,perPage:25){media(type:$type,genre_in:$genre,tag_in:$tag,countryOfOrigin:$country,sort:$sort,popularity_greater:$pop,isAdult:false){' + AL_FIELDS + '}}}';
+const Q_STAFF = 'query($id:Int,$mal:Int,$type:MediaType){Media(id:$id,idMal:$mal,type:$type){staff(perPage:2,sort:RELEVANCE){nodes{id name{full} staffMedia(type:MANGA,sort:POPULARITY_DESC,perPage:6){nodes{' + AL_FIELDS_LITE + '}}}}}}';
+const Q_STUDIO = 'query($id:Int,$mal:Int,$type:MediaType){Media(id:$id,idMal:$mal,type:$type){studios(isMain:true){nodes{id name media(sort:POPULARITY_DESC,perPage:8,isMain:true){nodes{' + AL_FIELDS_LITE + '}}}}}}';
+
+function hash_(text) {
+let h = 5381;
+const s = String(text);
+for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+return (h >>> 0).toString(36);
+}
+function sleep_(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+// AniList istek kuyrugu: baslangiclar arasi en az anilistGapMs (~65 istek/dk), 429'da bekleyip tekrar dener.
+let anilistNext = 0;
+async function anilistSlot_() {
+const now = Date.now();
+const start = Math.max(now, anilistNext);
+anilistNext = start + REC_CFG.anilistGapMs;
+if (start > now) await sleep_(start - now);
+}
+async function anilistRequest_(query, variables, opts) {
+opts = opts || {};
+const key = 'al:' + hash_(query) + ':' + JSON.stringify(variables || {});
+if (!opts.nocache) {
+const hit = await pcache.get(key);
+if (hit) return hit;
+}
+for (let attempt = 0; attempt < 3; attempt++) {
+await anilistSlot_();
+const controller = new AbortController();
+const timer = setTimeout(() => controller.abort(), 12000);
+let response;
+try {
+response = await fetch('https://graphql.anilist.co', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ query: query, variables: variables || {} }), signal: controller.signal, credentials: 'omit' });
+} catch (error) {
+clearTimeout(timer);
+if (attempt === 2) throw new Error('AniList erişilemedi.');
+await sleep_(800);
+continue;
+}
+clearTimeout(timer);
+if (response.status === 429) {
+const wait = Math.min(30, Number(response.headers.get('Retry-After')) || 10);
+anilistNext = Math.max(anilistNext, Date.now() + wait * 1000);
+if (attempt === 2) throw new Error('AniList istek sınırına takıldı.');
+continue;
+}
+if (response.status >= 500 && attempt < 2) { await sleep_(1000); continue; }
+if (!response.ok) throw new Error('AniList yanıtı alınamadı (' + response.status + ').');
+const json = await response.json();
+if (json.errors && !(opts.tolerant && json.data)) throw new Error('AniList veriyi sağlayamadı.');
+if (!opts.nocache) await pcache.set(key, json.data, opts.ttl || REC_CFG.rawTtl);
+return json.data;
+}
+throw new Error('AniList yanıt vermedi.');
+}
+
+function alTags_(tags) {
+return (tags || []).filter(t => t && t.name && !t.isMediaSpoiler && Number(t.rank) >= REC_CFG.minTagRank)
+.sort((a, b) => b.rank - a.rank).slice(0, 15).map(t => [t.name, Number(t.rank)]);
+}
+function recommendationTags_(meta) {
+return (Array.isArray(meta.anilistTags) ? meta.anilistTags : []).map(t => Array.isArray(t) ? { name: String(t[0]), rank: Number(t[1]) || 0 } : null)
+.filter(t => t && t.name && t.rank >= REC_CFG.minTagRank);
+}
+function recommendationKey_(item) { return [item.type, item.source, item.sourceId].join(':'); }
+
+function canonicalAlGenre_(name) {
+const key = recommendationGenreKey_(name);
+return AL_GENRES.find(g => recommendationGenreKey_(g) === key) || '';
+}
+
+// ---- 1) Profil sinyalleri ----
+function recommendationDate_(item) {
+const meta = parseMetadata_(item);
+const d = new Date(meta.completedAt || item.updatedAt || item.createdAt || '');
+return isNaN(d.getTime()) ? null : d;
+}
+function recommendationScoreStats_(items) {
+const scores = items.map(x => Number(x.score)).filter(v => v > 0);
+if (scores.length < REC_CFG.fewScoresMin) return { mean: 6, std: 2 };
+const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
+const variance = scores.reduce((a, b) => a + (b - mean) * (b - mean), 0) / scores.length;
+return { mean: mean, std: Math.max(0.8, Math.sqrt(variance)) };
+}
+function recommendationWeight_(item, stats) {
+stats = stats || { mean: 6, std: 2 };
+const score = Number(item.score) || 0;
+let w;
+if (item.status === 'dropped') w = REC_CFG.droppedWeight;
 else {
-const fingerprint=existing.map(x=>[x.id,x.updatedAt]).join('|');const key=cacheKey_('recommend-v1:'+type+':'+fingerprint+':'+filters.genre+':duration:'+Boolean(filters.maxMinutes)),cache=CacheService.getScriptCache();const hit=readCache_(cache,key);
-if(hit)candidates=hit;else{try{candidates=await fetchRecommendationCandidates_(type,profile,filters,notes);}catch(e){notes.push('Dış kaynaklar şu anda yanıt vermiyor. Planlananlarım seçeneğini kullanabilirsin.');}if(candidates.length)putCache_(cache,key,candidates,1800);}
+const base = score > 0 ? Math.max(-2.5, Math.min(2.5, (score - stats.mean) / stats.std)) : (item.status === 'completed' ? 0.4 : item.status === 'in_progress' ? 0.2 : 0);
+const factor = { completed: 1, in_progress: 0.8, on_hold: 0.5, planned: 0 }[item.status];
+w = base * (factor === undefined ? 0.5 : factor);
 }
-// For library suggestions use the user's rating first. External candidates use public scores.
-if(input.scope==='library')candidates=candidates.map(x=>{const m=parseMetadata_(x);if(Number(x.score)>0)m.malScore=Number(x.score);return Object.assign({},x,{metadataJson:JSON.stringify(m)});});
-let ranked=filterRecommendationCandidates_(candidates,input.scope==='library'?[]:existing,filters,profile);
-// Similar-title lists can be exhausted by an imported library; widen discovery
-// while preserving user filters and use the original profile for ranking.
-if(input.scope!=='library'&&ranked.length<6){
-const broadened=Object.assign({},profile,{seeds:[]}),started=Date.now();
-for(let page=1;page<=3&&ranked.length<6;page++){
-if(Date.now()-started>20000)break;
-try{const extra=await fetchRecommendationCandidates_(type,broadened,Object.assign({},filters,{page:page}),notes);candidates=candidates.concat(extra);ranked=filterRecommendationCandidates_(candidates,existing,filters,profile);}catch(e){notes.push('Genişletilmiş keşif kaynağı şu anda kullanılamıyor.');break;}
+if (item.favorite) w = Math.max(w, 0) * REC_CFG.favoriteBoost + 1;
+const d = recommendationDate_(item);
+if (d) {
+const years = Math.max(0, (Date.now() - d.getTime()) / 31557600000);
+w *= Math.max(REC_CFG.recencyFloor, Math.pow(0.5, years / REC_CFG.halfLifeYears));
+}
+return w;
+}
+function recommendationProfile_(items, type, dismissed) {
+const scoped = items.filter(x => !type || x.type === type);
+const stats = recommendationScoreStats_(scoped);
+const weights = {}, display = {}, tagRaw = {}, libTags = [], favs = [], seedWeights = new Map();
+const signal = (genres, tags, w) => {
+genres.forEach(g => {
+const key = recommendationGenreKey_(g);
+if (!key) return;
+weights[key] = (weights[key] || 0) + w;
+display[key] = display[key] || g;
+});
+tags.forEach(t => { tagRaw[t.name] = (tagRaw[t.name] || 0) + w * (t.rank / 100); });
+};
+const weighted = scoped.map(x => ({ x: x, w: recommendationWeight_(x, stats) }));
+weighted.forEach(entry => {
+const x = entry.x, genres = recommendationGenres_(x), tags = recommendationTags_(parseMetadata_(x));
+if (entry.w) signal(genres, tags, entry.w);
+if (tags.length) libTags.push(tags.map(t => t.name));
+if (x.favorite) favs.push([...new Set(genres.map(recommendationGenreKey_))]);
+seedWeights.set(x.id, entry.w);
+});
+(dismissed || []).forEach(d => {
+signal(d.genres || [], (d.tags || []).map(t => ({ name: String(t[0]), rank: Number(t[1]) || 0 })), REC_CFG.dismissPenalty);
+});
+const seeds = weighted.filter(e => e.w > 0).sort((a, b) => b.w - a.w).map(e => e.x);
+return { weights: weights, display: display, tagRaw: tagRaw, libTags: libTags, favs: favs, seeds: seeds, seedWeights: seedWeights, count: scoped.length, stats: stats };
+}
+function recommendationTopTags_(profile, n) {
+const df = {};
+let total = 0;
+(profile.libTags || []).forEach(names => {
+if (!names.length) return;
+total++;
+new Set(names).forEach(t => { df[t] = (df[t] || 0) + 1; });
+});
+return Object.keys(profile.tagRaw || {}).map(t => ({ t: t, s: profile.tagRaw[t] * (Math.log((total + 1) / ((df[t] || 0) + 1)) + 1) }))
+.filter(x => x.s > 0).sort((a, b) => b.s - a.s).slice(0, n).map(x => x.t);
+}
+function recommendationTopGenres_(profile, n) {
+return Object.keys(profile.weights).filter(k => profile.weights[k] > 0).sort((a, b) => profile.weights[b] - profile.weights[a]).slice(0, n).map(k => profile.display[k]);
+}
+function recommendationFingerprint_(type, profile) {
+return hash_([type, profile.seeds.slice(0, REC_CFG.seedCount).map(x => x.id).join(','), recommendationTopTags_(profile, 3).join(','), recommendationTopGenres_(profile, 2).join(',')].join('#'));
+}
+
+// ---- Aday normalizasyonu ----
+function recommendationAniList_(x, type, from, extra) {
+if (!x) return null;
+return { type: type, title: x.title.english || x.title.romaji || x.title.native, originalTitle: x.title.native || '', year: (x.startDate || {}).year || 0, source: 'anilist', sourceId: String(x.idMal || x.id), externalUrl: x.siteUrl || '', imageUrl: (x.coverImage || {}).large || '', totalProgress: type === 'anime' ? x.episodes || 0 : x.chapters || 0,
+metadataJson: JSON.stringify(Object.assign({ anilistId: x.id, malId: x.idMal || '', mediaFormat: x.format || '', countryOfOrigin: x.countryOfOrigin || '', genres: x.genres || [], synopsis: String(x.description || '').slice(0, 900), durationMinutes: x.duration || 0, anilistScore: x.averageScore || 0, recommendedFrom: from || '', anilistTags: alTags_(x.tags), anilistPopularity: x.popularity || 0 }, extra || {})) };
+}
+
+// ---- 3 + 6) AniList graf adaylari + profil sorgulari + yazar/studyo adaylari ----
+async function fetchAniListPool_(type, profile, filters, notes, ctx) {
+const mediaType = type === 'manhwa' ? 'manga' : type;
+const MT = mediaType.toUpperCase();
+const country = type === 'manhwa' ? 'KR' : null;
+const entries = new Map();
+const touch = (node, source, seedInfo, creator) => {
+if (!node || !node.title) return;
+if (type === 'manhwa' && node.countryOfOrigin !== 'KR') return;
+const key = String(node.idMal || node.id);
+let entry = entries.get(key);
+if (!entry) { entry = { node: node, sources: new Set(), seeds: [], creator: null }; entries.set(key, entry); }
+if (!entry.node.tags && node.tags) entry.node = node;
+entry.sources.add(source);
+if (seedInfo && !entry.seeds.some(s => s.t === seedInfo.t)) entry.seeds.push(seedInfo);
+if (creator && !entry.creator) entry.creator = creator;
+};
+const seedIds = seed => {
+const m = parseMetadata_(seed);
+const mal = Number(m.malId || (['jikan', 'mal'].includes(seed.source) ? seed.sourceId : 0)) || null;
+const id = Number(m.anilistId) || null;
+return { id: id, mal: id ? null : mal };
+};
+const seedPool = (type === 'manga' || type === 'manhwa' ? profile.seeds.filter(x => x.type === 'manga') : profile.seeds.filter(x => x.type === type));
+const seeds = seedPool.slice(0, REC_CFG.seedCount);
+let failures = 0;
+
+// Graf: kullanicilarin oyladigi benzer basliklar
+for (const seed of seeds) {
+if (Date.now() > ctx.deadline) { ctx.truncated = true; break; }
+const ids = seedIds(seed);
+if (!ids.id && !ids.mal) continue;
+try {
+const data = await anilistRequest_(Q_SEED, { id: ids.id, mal: ids.mal, type: MT });
+const media = data && data.Media;
+if (!media) continue;
+failures = 0;
+((media.relations || {}).edges || []).forEach(edge => {
+if (SERIES_RELS.has(edge.relationType) && edge.node) {
+if (edge.node.id) ctx.related.add(edge.node.id);
+if (edge.node.idMal) ctx.related.add(edge.node.idMal);
+}
+});
+const w = Math.max(0.2, profile.seedWeights.get(seed.id) || 0.5);
+((media.recommendations || {}).nodes || []).forEach(n => {
+if (n && n.mediaRecommendation && Number(n.rating) >= 0) touch(n.mediaRecommendation, 'graph', { t: seed.title, w: w, r: Number(n.rating) || 0 });
+});
+} catch (error) {
+failures++;
+if (failures >= 2) { notes.push('AniList benzerlik verisi şu an alınamıyor.'); break; }
 }
 }
-if(!ranked.length)notes.push('Kaynaklardan '+candidates.length+' aday geldi; ekli içerikler ve seçtiğin filtrelerden sonra uygun aday kalmadı.');
-if(input.useGemini===true&&!ranked.length)notes.push('Aday bulunamadığı için Gemini çağrılmadı.');
-let aiUsed=false;if(input.useGemini===true&&ranked.length){try{ranked=await geminiRankRecommendations_(ranked.slice(0,20),profile);aiUsed=true;}catch(e){notes.push('Gemini kullanılamadı; ücretsiz benzerlik sıralaması gösteriliyor.');}}
-if(!profile.seeds.length)notes.push('Bu kategoride yüksek puan veya favori verisi az. Birkaç içeriği puanlayarak önerileri kişiselleştirebilirsin.');
-return {recommendations:ranked.slice(0,12),profile:{count:profile.count,seeds:profile.seeds.slice(0,3).map(x=>x.title),genres:Object.keys(profile.weights).filter(k=>profile.weights[k]>0).sort((a,b)=>profile.weights[b]-profile.weights[a]).slice(0,5).map(k=>profile.display[k])},notice:notes.join(' '),aiUsed:aiUsed};
+
+// Profil sorgulari: en guclu etiket / turler
+const userGenre = filters.genre ? canonicalAlGenre_(filters.genre) : '';
+const userTag = filters.genre && !userGenre ? filters.genre : '';
+const page = filters.page || 1;
+const queries = [];
+queries.push({ genre: userGenre ? [userGenre] : (recommendationTopGenres_(profile, 1).map(canonicalAlGenre_).filter(Boolean).slice(0, 1)), tag: userTag ? [userTag] : null, sort: ['POPULARITY_DESC'], pop: null, source: 'general' });
+{
+recommendationTopTags_(profile, 3).forEach(t => queries.push({ genre: userGenre ? [userGenre] : null, tag: [t], sort: ['SCORE_DESC'], pop: 2000, source: 'profile' }));
+if (!userGenre) recommendationTopGenres_(profile, 2).map(canonicalAlGenre_).filter(Boolean).forEach(g => queries.push({ genre: [g], tag: userTag ? [userTag] : null, sort: ['SCORE_DESC'], pop: 2000, source: 'profile' }));
 }
-async function fetchRecommendationCandidates_(type,profile,filters,notes){
+failures = 0;
+for (const q of queries) {
+if (Date.now() > ctx.deadline) { ctx.truncated = true; break; }
+try {
+const data = await anilistRequest_(Q_POOL, { type: MT, genre: q.genre && q.genre.length ? q.genre : null, tag: q.tag, page: page, country: country, sort: q.sort, pop: q.pop });
+((data && data.Page && data.Page.media) || []).forEach(node => touch(node, q.source));
+failures = 0;
+} catch (error) {
+failures++;
+if (failures >= 2) break;
+}
+}
+
+// Yazar / studyo adaylari (en sevilen 2 baslik)
+for (const seed of seeds.slice(0, 2)) {
+if (Date.now() > ctx.deadline) { ctx.truncated = true; break; }
+const ids = seedIds(seed);
+if (!ids.id && !ids.mal) continue;
+const w = Math.max(0.2, profile.seedWeights.get(seed.id) || 0.5);
+try {
+if (mediaType === 'anime') {
+const data = await anilistRequest_(Q_STUDIO, { id: ids.id, mal: ids.mal, type: MT });
+(((data && data.Media && data.Media.studios) || {}).nodes || []).slice(0, 1).forEach(studio => {
+((studio.media || {}).nodes || []).forEach(node => touch(node, 'creator', null, { name: studio.name, kind: 'stüdyo', seed: seed.title, w: w }));
+});
+} else {
+const data = await anilistRequest_(Q_STAFF, { id: ids.id, mal: ids.mal, type: MT });
+(((data && data.Media && data.Media.staff) || {}).nodes || []).forEach(person => {
+((person.staffMedia || {}).nodes || []).forEach(node => touch(node, 'creator', null, { name: person.name && person.name.full || '', kind: 'yazar/çizer', seed: seed.title, w: w }));
+});
+}
+} catch (error) { /* yazar/studyo adaylari istege bagli */ }
+}
+
+return [...entries.values()].map(e => recommendationAniList_(e.node, mediaType, e.seeds[0] ? e.seeds[0].t : '', {
+recSources: [...e.sources], recSeeds: e.seeds, creatorFrom: e.creator || undefined
+}));
+}
+
+// ---- 5) Siralama: aday temizligi, skor bilesenleri, MMR ----
+function seriesKey_(title) {
+return titleKey_(title)
+.replace(/\b(the )?(final|last) season\b/g, ' ')
+.replace(/\b(season|part|cour|series|vol|volume)\s*\d+\b/g, ' ')
+.replace(/\b\d+(st|nd|rd|th)\s+(season|part|cour)\b/g, ' ')
+.replace(/\s(ii|iii|iv|vi|vii|viii)$/, ' ')
+.replace(/\s+/g, ' ').trim();
+}
+function sameSeriesAsLibrary_(item, meta, libKeys, related) {
+if (related && related.size) {
+if (meta.anilistId && related.has(Number(meta.anilistId))) return true;
+if (meta.malId && related.has(Number(meta.malId))) return true;
+}
+const keys = [seriesKey_(item.title), seriesKey_(item.originalTitle)].filter(k => k.length >= 4);
+return keys.some(k => libKeys.has(k) || [...libKeys].some(l => l.indexOf(' ') > 0 && k.indexOf(l + ' ') === 0));
+}
+function cosine_(a, b) {
+let dot = 0, na = 0, nb = 0;
+for (const k in a) { na += a[k] * a[k]; if (b[k] !== undefined) dot += a[k] * b[k]; }
+for (const k in b) nb += b[k] * b[k];
+return na > 0 && nb > 0 ? dot / Math.sqrt(na * nb) : 0;
+}
+function recommendationPrepare_(item) {
+const meta = parseMetadata_(item);
+const genres = recommendationGenres_(item);
+return { item: item, meta: meta, genres: genres, keys: [...new Set(genres.map(recommendationGenreKey_))].filter(Boolean), tags: recommendationTags_(meta), sourceScore: recommendationSourceScore_(item) };
+}
+function recommendationIdf_(profile, prepared) {
+const df = {};
+let total = 0;
+const add = names => {
+if (!names.length) return;
+total++;
+new Set(names).forEach(t => { df[t] = (df[t] || 0) + 1; });
+};
+(profile.libTags || []).forEach(add);
+prepared.forEach(c => add(c.tags.map(t => t.name)));
+return name => Math.log((total + 1) / ((df[name] || 0) + 1)) + 1;
+}
+function recommendationVotes_(meta) {
+if (Number(meta.anilistPopularity) > 0) return { v: Number(meta.anilistPopularity), m: 1500 };
+if (Number(meta.tmdbVotes) > 0) return { v: Number(meta.tmdbVotes), m: 500 };
+return null;
+}
+function scoreRecommendations_(list, profile) {
+const prepared = list.map(recommendationPrepare_);
+const idf = recommendationIdf_(profile, prepared);
+const pTag = {};
+Object.keys(profile.tagRaw || {}).forEach(t => { pTag[t] = profile.tagRaw[t] * idf(t); });
+const pTagUsable = Object.keys(pTag).some(t => Math.abs(pTag[t]) > 0.0001);
+prepared.forEach(c => {
+const tv = {}, gv = {};
+c.tags.forEach(t => { tv[t.name] = t.rank / 100 * idf(t.name); });
+c.keys.forEach(k => { gv[k] = 1; });
+const tagCos = pTagUsable && c.tags.length ? cosine_(pTag, tv) : null;
+const genreCos = c.keys.length ? cosine_(profile.weights, gv) : 0;
+c.contentRaw = tagCos === null ? genreCos : 0.7 * tagCos + 0.3 * genreCos;
+c.vec = Object.assign({}, tv);
+c.keys.forEach(k => { c.vec['g:' + k] = 0.6; });
+c.idfTags = tv;
+});
+const raws = prepared.map(c => c.contentRaw);
+const lo = Math.min.apply(null, raws), hi = Math.max.apply(null, raws);
+prepared.forEach(c => { c.content = hi > lo ? (c.contentRaw - lo) / (hi - lo) : 0.5; });
+
+prepared.forEach(c => {
+const seeds = c.meta.recSeeds || [];
+c.graphRaw = seeds.reduce((s, x) => s + x.w * Math.log(2 + Math.max(0, x.r || 0)), 0)
++ (c.meta.recommendedAuthor ? 1.5 : 0)
++ (c.meta.creatorFrom ? Math.max(0.5, c.meta.creatorFrom.w || 0.5) * 0.8 : 0)
++ (!seeds.length && c.meta.recommendedFrom ? 0.7 : 0);
+});
+const maxGraph = Math.max.apply(null, prepared.map(c => c.graphRaw).concat([0]));
+prepared.forEach(c => { c.graph = maxGraph > 0 ? c.graphRaw / maxGraph : 0; });
+
+const rated = prepared.filter(c => c.sourceScore > 0);
+const C = rated.length ? rated.reduce((s, c) => s + c.sourceScore, 0) / rated.length : 7;
+const pops = prepared.map(c => Number(c.meta.anilistPopularity) || 0).filter(v => v > 0).sort((a, b) => a - b);
+prepared.forEach(c => {
+const R = c.sourceScore;
+const votes = recommendationVotes_(c.meta);
+const adjusted = R > 0 && votes ? (votes.v * R + votes.m * C) / (votes.v + votes.m) : R;
+c.bayes = Math.max(0, Math.min(1, adjusted / 10));
+const pop = Number(c.meta.anilistPopularity) || 0;
+if (R > 0 && pop > 0 && pops.length > 3) {
+const pct = pops.filter(v => v <= pop).length / pops.length;
+c.gem = Math.max(0, Math.min(1, (R - C) / 2)) * (1 - pct);
+} else c.gem = 0;
+});
+
+const active = { content: true, graph: maxGraph > 0, bayes: rated.length > 0, gem: prepared.some(c => c.gem > 0) };
+const sumW = Object.keys(REC_WEIGHTS).reduce((s, k) => s + (active[k] ? REC_WEIGHTS[k] : 0), 0) || 1;
+prepared.forEach(c => {
+c.score = Object.keys(REC_WEIGHTS).reduce((s, k) => s + (active[k] ? REC_WEIGHTS[k] * c[k === 'content' ? 'content' : k] : 0), 0) / sumW;
+c.series = seriesKey_(c.item.title);
+});
+return { prepared: prepared, idf: idf, pTag: pTag };
+}
+function recommendationReason_(c, profile, ctx) {
+const parts = [];
+const names = [];
+c.tags.map(t => ({ n: t.name, s: (ctx.pTag[t.name] || 0) * c.idfTags[t.name] })).filter(x => x.s > 0).sort((a, b) => b.s - a.s).slice(0, 2).forEach(x => names.push(x.n));
+if (names.length < 2) {
+c.genres.map(g => ({ g: g, w: profile.weights[recommendationGenreKey_(g)] || 0 })).filter(x => x.w > 0).sort((a, b) => b.w - a.w).slice(0, 3 - names.length).forEach(x => { if (!names.includes(x.g)) names.push(x.g); });
+}
+if (names.length) parts.push('Ortak etiket/türler: ' + names.join(', '));
+const seeds = (c.meta.recSeeds || []).slice().sort((a, b) => b.w - a.w).slice(0, 2).map(s => '“' + s.t + '”');
+if (seeds.length) parts.push(seeds.join(' ve ') + ' ile benzer bulundu');
+else if (c.meta.recommendedFrom) parts.push('“' + c.meta.recommendedFrom + '” için kaynakta benzer içerik olarak listeleniyor');
+if (c.meta.creatorFrom && c.meta.creatorFrom.name) parts.push('Aynı ' + c.meta.creatorFrom.kind + ': ' + c.meta.creatorFrom.name + (c.meta.creatorFrom.seed ? ' (“' + c.meta.creatorFrom.seed + '”)' : ''));
+if (c.meta.recommendedAuthor) parts.push('Sevdiğin içerikteki yazarla eşleşiyor: ' + c.meta.recommendedAuthor);
+const favs = c.keys.length ? profile.favs.filter(f => c.keys.filter(k => f.includes(k)).length >= Math.min(2, c.keys.length)).length : 0;
+if (favs >= 2) parts.push(favs + ' favorinle ortak türler');
+if (c.gem > 0.5) parts.push('az bilinen ama yüksek puanlı');
+return parts.length ? 'Neden: ' + parts.join(' • ') : 'Henüz yeterli tercih verisi yok; kaynakta keşfedilebilen bir içerik.';
+}
+function filterRecommendationCandidates_(candidates, existing, filters, profile, opts) {
+filters = filters || {};
+opts = opts || {};
+const dismissedKeys = new Set(), dismissedTitles = new Set();
+(opts.dismissed || []).forEach(d => {
+if (d.key) dismissedKeys.add(d.key);
+if (d.tk) dismissedTitles.add(d.type + ':' + d.tk);
+});
+const libKeys = new Set();
+if (opts.series) (opts.library || []).forEach(x => [x.title, x.originalTitle].forEach(t => { const k = seriesKey_(t); if (k.length >= 4) libKeys.add(k); }));
+const seen = new Set();
+const unique = [];
+candidates.forEach(x => {
+if (!x || !x.title || duplicateItem_(x, existing, '') || duplicateItem_(x, unique, '')) return;
+const key = recommendationKey_(x);
+if (seen.has(key)) return;
+seen.add(key);
+if (dismissedKeys.has(key) || dismissedTitles.has(x.type + ':' + titleKey_(x.title))) return;
+const meta = parseMetadata_(x);
+if (opts.series && sameSeriesAsLibrary_(x, meta, libKeys, opts.related)) return;
+if (filters.type === 'manhwa' && meta.countryOfOrigin !== 'KR') return;
+if (filters.genre) {
+const wanted = recommendationGenreKey_(filters.genre);
+const inGenres = recommendationGenres_(x).some(g => recommendationGenreKey_(g) === wanted);
+const inTags = recommendationTags_(meta).some(t => recommendationGenreKey_(t.name) === wanted);
+if (!inGenres && !inTags) return;
+}
+const sourceScore = recommendationSourceScore_(x);
+if (filters.minScore && sourceScore < filters.minScore) return;
+if (filters.maxMinutes) {
+const minutes = Number(meta.durationMinutes || 0);
+if (!minutes || minutes > filters.maxMinutes) return;
+}
+unique.push(x);
+});
+if (!unique.length) return [];
+const scored = scoreRecommendations_(unique, profile);
+const diversity = filters.diversity === undefined ? 0.3 : filters.diversity;
+const lambda = 1 - 0.5 * diversity;
+const pool = scored.prepared.slice().sort((a, b) => b.score - a.score);
+const selected = [];
+const chosenSeries = new Set();
+while (selected.length < REC_CFG.listSize && pool.length) {
+let best = -1, bestValue = -Infinity;
+for (let i = 0; i < pool.length; i++) {
+const c = pool[i];
+if (opts.series && c.series.length >= 4 && chosenSeries.has(c.series)) continue;
+let sim = 0;
+for (const s of selected) sim = Math.max(sim, cosine_(c.vec, s.vec));
+const value = lambda * c.score - (1 - lambda) * sim;
+if (value > bestValue) { bestValue = value; best = i; }
+}
+if (best < 0) break;
+const picked = pool.splice(best, 1)[0];
+selected.push(picked);
+if (picked.series.length >= 4) chosenSeries.add(picked.series);
+}
+return selected.map(c => ({
+item: c.item, key: recommendationKey_(c.item), rank: c.score, sourceScore: c.sourceScore,
+reason: recommendationReason_(c, profile, scored)
+}));
+}
+
+async function fetchRecommendationCandidates_(type,profile,filters,notes,ctx){ctx=ctx||{deadline:Date.now()+REC_CFG.workBudgetMs,related:new Set(),truncated:false};
 const seeds=((type==='manga'||type==='manhwa')?profile.seeds.filter(x=>x.type==='manga'):profile.seeds).slice(0,2);let results=[];
-if(type==='anime'||type==='manga'||type==='manhwa'){
-const mediaType=type==='manhwa'?'manga':type,query='query($id:Int,$mal:Int,$type:MediaType){Media(id:$id,idMal:$mal,type:$type){recommendations(sort:RATING_DESC,perPage:20){nodes{mediaRecommendation{id idMal format countryOfOrigin title{romaji english native} coverImage{large} startDate{year} episodes chapters duration averageScore genres description(asHtml:false) siteUrl}}}}}';
-for(const seed of seeds){try{const m=parseMetadata_(seed),mal=Number(m.malId||((seed.source==='jikan'||seed.source==='mal')?seed.sourceId:0))||null,id=Number(m.anilistId)||null;if(!id&&!mal)continue;const data=await fetchJson_('https://graphql.anilist.co',{method:'post',contentType:'application/json',payload:JSON.stringify({query:query,variables:{id:id,mal:mal,type:mediaType.toUpperCase()}})});results=results.concat((((data.data||{}).Media||{}).recommendations||{}).nodes?.map(n=>recommendationAniList_(n.mediaRecommendation,mediaType,seed.title)).filter(x=>x&&(type!=='manhwa'||x.metadataJson&&JSON.parse(x.metadataJson).countryOfOrigin==='KR'))||[]);}catch(e){notes.push('Bir anime/manga benzerlik kaynağı yanıt vermedi.');}}
-if(!results.length){const positive=Object.keys(profile.weights).filter(k=>profile.weights[k]>0).sort((a,b)=>profile.weights[b]-profile.weights[a]);const genre=filters.genre||profile.display[positive[0]]||null;const query='query($type:MediaType,$genre:String,$page:Int,$format:MediaFormat,$country:CountryCode){Page(page:$page,perPage:30){media(type:$type,genre:$genre,format:$format,countryOfOrigin:$country,sort:POPULARITY_DESC,isAdult:false){id idMal format countryOfOrigin title{romaji english native} coverImage{large} startDate{year} episodes chapters duration averageScore genres description(asHtml:false) siteUrl}}}';const data=await fetchJson_('https://graphql.anilist.co',{method:'post',contentType:'application/json',payload:JSON.stringify({query:query,variables:{type:mediaType.toUpperCase(),genre:genre,page:filters.page||1,format:null,country:type==='manhwa'?'KR':null}})});results=(((data.data||{}).Page||{}).media||[]).map(x=>recommendationAniList_(x,mediaType,''));}
+if(type==='anime'||type==='manga'||type==='manhwa'){results=await fetchAniListPool_(type,profile,filters,notes,ctx);
 }else if(type==='book'){
 const seed=seeds[0],m=seed?parseMetadata_(seed):{},author=(m.authors||[])[0];const positive=Object.keys(profile.weights).filter(k=>profile.weights[k]>0).sort((a,b)=>profile.weights[b]-profile.weights[a]);const genre=filters.genre||profile.display[positive[0]];const query=author?'inauthor:"'+String(author).replace(/"/g,'')+'"':genre?'subject:'+genre:'fiction';results=(filters.page&&filters.page>1?await searchRecommendationBooksPage_(query,filters.page):await searchBooks_(query)).map(x=>{const meta=typeof x.metadataJson==='object'?x.metadataJson:parseMetadata_(x);if(author&&(meta.authors||[]).some(a=>titleKey_(a)===titleKey_(author)))meta.recommendedAuthor=author;return Object.assign({},x,{metadataJson:JSON.stringify(meta)});});
 }else{
 const token=PropertiesService.getScriptProperties().getProperty('TMDB_TOKEN');if(!token){notes.push('Film, dizi ve K-Drama keşfi için Ayarlar’dan ücretsiz TMDB tokenını ekle.');return [];}
 const media=type==='movie'?'movie':'tv',headers={Authorization:'Bearer '+token,accept:'application/json'};
-for(const seed of seeds){if(seed.source!=='tmdb')continue;try{const data=await fetchJson_('https://api.themoviedb.org/3/'+media+'/'+encodeURIComponent(seed.sourceId)+'/recommendations?language=tr-TR&page=1',{headers:headers});results=results.concat((data.results||[]).map(x=>Object.assign({},x,{recommendedFrom:seed.title})));}catch(e){notes.push('Bir TMDB benzerlik kaynağı yanıt vermedi.');}}
-const genreData=await fetchJson_('https://api.themoviedb.org/3/genre/'+media+'/list?language=tr-TR',{headers:headers}),genreMap={};(genreData.genres||[]).forEach(g=>genreMap[g.id]=g.name);
+const recMap=new Map();for(const seed of profile.seeds.filter(s=>s.type===type&&s.source==='tmdb').slice(0,REC_CFG.tmdbSeedCount)){try{const data=await fetchJson_('https://api.themoviedb.org/3/'+media+'/'+encodeURIComponent(seed.sourceId)+'/recommendations?language=tr-TR&page=1',{headers:headers},REC_CFG.rawTtl);const w=Math.max(0.2,profile.seedWeights.get(seed.id)||0.5);(data.results||[]).forEach(x=>{const e=recMap.get(String(x.id))||{x:x,seeds:[]};e.seeds.push({t:seed.title,w:w,r:0});recMap.set(String(x.id),e);});}catch(e){notes.push('Bir TMDB benzerlik kaynağı yanıt vermedi.');}}
+results=[...recMap.values()].map(e=>Object.assign({},e.x,{recommendedFrom:e.seeds[0].t,recSeeds:e.seeds}));
+const genreData=await fetchJson_('https://api.themoviedb.org/3/genre/'+media+'/list?language=tr-TR',{headers:headers},7*86400),genreMap={};(genreData.genres||[]).forEach(g=>genreMap[g.id]=g.name);
 if(!results.length||type==='kdrama'){const preferred=filters.genre||Object.keys(profile.weights).filter(k=>profile.weights[k]>0).sort((a,b)=>profile.weights[b]-profile.weights[a]).map(k=>profile.display[k])[0];const genre=(genreData.genres||[]).find(g=>recommendationGenreKey_(g.name)===recommendationGenreKey_(preferred));const data=await fetchJson_('https://api.themoviedb.org/3/discover/'+media+'?language=tr-TR&include_adult=false&sort_by=vote_count.desc&page='+(filters.page||1)+(genre?'&with_genres='+genre.id:'')+(type==='kdrama'?'&with_original_language=ko':''),{headers:headers});results=results.concat(data.results||[]);}
-results=results.filter(x=>type!=='kdrama'||x.original_language==='ko'||(x.origin_country||[]).includes('KR')).slice(0,24).map(x=>({type:type,title:x.title||x.name,originalTitle:x.original_title||x.original_name||'',year:yearFromDate_(x.release_date||x.first_air_date),source:'tmdb',sourceId:String(x.id),externalUrl:'https://www.themoviedb.org/'+media+'/'+x.id,imageUrl:x.poster_path?'https://image.tmdb.org/t/p/w500'+x.poster_path:'',totalProgress:type==='movie'?1:0,metadataJson:JSON.stringify({genres:(x.genre_ids||[]).map(id=>genreMap[id]).filter(Boolean),synopsis:x.overview||'',tmdbScore:x.vote_average||0,recommendedFrom:x.recommendedFrom||''})}));
+results=results.filter(x=>type!=='kdrama'||x.original_language==='ko'||(x.origin_country||[]).includes('KR')).slice(0,24).map(x=>({type:type,title:x.title||x.name,originalTitle:x.original_title||x.original_name||'',year:yearFromDate_(x.release_date||x.first_air_date),source:'tmdb',sourceId:String(x.id),externalUrl:'https://www.themoviedb.org/'+media+'/'+x.id,imageUrl:x.poster_path?'https://image.tmdb.org/t/p/w500'+x.poster_path:'',totalProgress:type==='movie'?1:0,metadataJson:JSON.stringify({genres:(x.genre_ids||[]).map(id=>genreMap[id]).filter(Boolean),synopsis:x.overview||'',tmdbScore:x.vote_average||0,recommendedFrom:x.recommendedFrom||'',recSeeds:x.recSeeds||[],tmdbVotes:x.vote_count||0})}));
 // Limit detail requests; without a duration filter, do not fetch 24 detail pages.
 if(filters.maxMinutes)results=await Promise.all(results.slice(0,10).map(async x=>{try{const detail=await fetchJson_('https://api.themoviedb.org/3/'+media+'/'+x.sourceId+'?language=tr-TR',{headers:headers});updateMetadata_(x,{durationMinutes:Number(detail.runtime||(detail.episode_run_time||[])[0]||0)});x.totalProgress=type==='movie'?1:Number(detail.number_of_episodes)||0;}catch(e){}return x;}));
 }
 return results.map(x=>normalizeItem_(Object.assign({status:'planned'},x)));
 }
-function recommendationAniList_(x,type,from){if(!x)return null;return {type:type,title:x.title.english||x.title.romaji||x.title.native,originalTitle:x.title.native||'',year:(x.startDate||{}).year||0,source:'anilist',sourceId:String(x.idMal||x.id),externalUrl:x.siteUrl||'',imageUrl:(x.coverImage||{}).large||'',totalProgress:type==='anime'?x.episodes||0:x.chapters||0,metadataJson:JSON.stringify({anilistId:x.id,malId:x.idMal||'',mediaFormat:x.format||'',countryOfOrigin:x.countryOfOrigin||'',genres:x.genres||[],synopsis:x.description||'',durationMinutes:x.duration||0,anilistScore:x.averageScore||0,recommendedFrom:from||''})};}
+// ---- 7) Kalici cache (IndexedDB 'reccache' anahtari; yedege dahil degil) ----
+const pcache = {
+data: null, loading: null, timer: null,
+load() {
+if (this.data) return Promise.resolve(this.data);
+if (!this.loading) this.loading = ready.then(() => new Promise(resolve => {
+const fallback = () => { this.data = { entries: {} }; resolve(this.data); };
+try {
+const get = db.transaction('vault').objectStore('vault').get('reccache');
+get.onsuccess = () => { this.data = get.result && get.result.entries ? get.result : { entries: {} }; resolve(this.data); };
+get.onerror = fallback;
+} catch (error) { fallback(); }
+}));
+return this.loading;
+},
+async get(key) {
+const d = await this.load();
+const e = d.entries[key];
+if (!e) return null;
+if (e.exp < Date.now()) { delete d.entries[key]; return null; }
+return e.v;
+},
+async set(key, value, ttlSeconds) {
+const d = await this.load();
+d.entries[key] = { v: value, exp: Date.now() + ttlSeconds * 1000, at: Date.now() };
+const keys = Object.keys(d.entries);
+if (keys.length > 300) keys.sort((a, b) => d.entries[a].at - d.entries[b].at).slice(0, keys.length - 240).forEach(k => { delete d.entries[k]; });
+this.flush();
+},
+flush() {
+clearTimeout(this.timer);
+this.timer = setTimeout(() => {
+try {
+const tx = db.transaction('vault', 'readwrite');
+tx.objectStore('vault').put(this.data, 'reccache');
+tx.onerror = tx.onabort = () => {};
+} catch (error) { /* cache yazilamazsa sistem cache'siz calisir */ }
+}, 1500);
+},
+async clear() {
+await this.load();
+this.data = { entries: {} };
+clearTimeout(this.timer);
+await new Promise(resolve => {
+try {
+const tx = db.transaction('vault', 'readwrite');
+tx.objectStore('vault').put(this.data, 'reccache');
+tx.oncomplete = resolve; tx.onerror = tx.onabort = resolve;
+} catch (error) { resolve(); }
+});
+}
+};
+
+// ---- Ana akis ----
+async function getPersonalRecommendations(input) {
+input = input || {};
+const type = String(input.type || 'anime');
+if (!['anime', 'manga', 'manhwa', 'movie', 'series', 'kdrama', 'book'].includes(type)) throw new Error('Kategori seçin.');
+const diversityRaw = input.diversity === undefined || input.diversity === '' ? NaN : Number(input.diversity);
+const filters = { type: type, genre: String(input.genre || '').slice(0, 100), maxMinutes: Math.max(0, Math.min(10000, Number(input.maxMinutes) || 0)), minScore: Math.max(0, Math.min(10, Number(input.minScore) || 0)), diversity: Number.isFinite(diversityRaw) ? Math.max(0, Math.min(1, diversityRaw / 100)) : 0.3 };
+const isReading = type === 'manga' || type === 'manhwa';
+const isLibrary = input.scope === 'library';
+const existing = listItems({});
+const readingSources = isReading ? existing.filter(x => ['manga', 'book'].includes(x.type) && ['completed', 'in_progress', 'on_hold'].includes(x.status)) : existing;
+const dismissedAll = Array.isArray(snapshot.dismissed) ? snapshot.dismissed : [];
+const dismissedScoped = dismissedAll.filter(d => d.type === (isReading ? 'manga' : type));
+const profile = recommendationProfile_(readingSources, isReading ? null : type, dismissedScoped);
+const notes = [];
+let candidates = [];
+const related = new Set();
+if (isLibrary) {
+candidates = existing.filter(x => x.type === (type === 'manhwa' ? 'manga' : type) && ['planned', 'in_progress', 'on_hold'].includes(x.status));
+} else {
+const tokenState = Boolean(PropertiesService.getScriptProperties().getProperty('TMDB_TOKEN'));
+const key = 'pool-v2:' + type + ':' + recommendationFingerprint_(type, profile) + ':' + filters.genre + ':d' + Boolean(filters.maxMinutes) + ':t' + tokenState;
+const hit = await pcache.get(key);
+if (hit && Array.isArray(hit.items)) {
+candidates = hit.items;
+(hit.related || []).forEach(id => related.add(id));
+} else {
+const ctx = { deadline: Date.now() + REC_CFG.workBudgetMs, related: related, truncated: false };
+try { candidates = await fetchRecommendationCandidates_(type, profile, filters, notes, ctx); }
+catch (e) { notes.push('Dış kaynaklar şu anda yanıt vermiyor. Planlananlarım seçeneğini kullanabilirsin.'); }
+if (ctx.truncated) notes.push('Zaman sınırı nedeniyle bazı kaynaklar atlandı; tekrar denersen kalanlar tamamlanır.');
+else if (candidates.length) await pcache.set(key, { items: candidates, related: [...related] }, REC_CFG.poolTtl);
+}
+}
+// Kutuphane onerilerinde once kendi puanin, dis adaylarda kaynak puani kullanilir.
+if (isLibrary) candidates = candidates.map(x => { const m = parseMetadata_(x); if (Number(x.score) > 0) m.malScore = Number(x.score); return Object.assign({}, x, { metadataJson: JSON.stringify(m) }); });
+const rankOpts = isLibrary ? {} : { dismissed: dismissedAll, related: related, series: ['anime', 'manga', 'manhwa'].includes(type), library: existing.filter(x => x.type === (type === 'manhwa' ? 'manga' : type)) };
+let ranked = filterRecommendationCandidates_(candidates, isLibrary ? [] : existing, filters, profile, rankOpts);
+// Benzer baslik listeleri ice aktarilan kutuphanede tukenebilir; filtreleri koruyarak kesfi genislet.
+if (!isLibrary && ranked.length < 6) {
+const broadened = Object.assign({}, profile, { seeds: [] }), started = Date.now();
+for (let page = 1; page <= 3 && ranked.length < 6; page++) {
+if (Date.now() - started > 20000) break;
+try {
+const extra = await fetchRecommendationCandidates_(type, broadened, Object.assign({}, filters, { page: page }), notes, { deadline: started + 20000, related: related, truncated: false });
+candidates = candidates.concat(extra);
+ranked = filterRecommendationCandidates_(candidates, existing, filters, profile, rankOpts);
+} catch (e) { notes.push('Genişletilmiş keşif kaynağı şu anda kullanılamıyor.'); break; }
+}
+}
+if (!ranked.length) notes.push('Kaynaklardan ' + candidates.length + ' aday geldi; ekli içerikler ve seçtiğin filtrelerden sonra uygun aday kalmadı.');
+if (input.useGemini === true && !ranked.length) notes.push('Aday bulunamadığı için Gemini çağrılmadı.');
+let aiUsed = false;
+if (input.useGemini === true && ranked.length) { try { ranked = await geminiRankRecommendations_(ranked.slice(0, 20), profile); aiUsed = true; } catch (e) { notes.push('Gemini kullanılamadı; ücretsiz benzerlik sıralaması gösteriliyor.'); } }
+if (!profile.seeds.length) notes.push('Bu kategoride yüksek puan veya favori verisi az. Birkaç içeriği puanlayarak önerileri kişiselleştirebilirsin.');
+return { recommendations: ranked.slice(0, 12), profile: { count: profile.count, seeds: profile.seeds.slice(0, 3).map(x => x.title), genres: Object.keys(profile.weights).filter(k => profile.weights[k] > 0).sort((a, b) => profile.weights[b] - profile.weights[a]).slice(0, 5).map(k => profile.display[k]), tags: recommendationTopTags_(profile, 5) }, notice: notes.join(' '), aiUsed: aiUsed };
+}
+
+// ---- "Ilgilenmiyorum" ----
+function dismissRecommendation(entry) {
+entry = entry || {};
+const type = String(entry.type || ''), source = String(entry.source || ''), sourceId = String(entry.sourceId || '');
+if (!type || !source || !sourceId) throw new Error('Öneri bilgisi eksik.');
+const item = { type: type, source: source, sourceId: sourceId, title: String(entry.title || '').slice(0, 200), metadataJson: entry.metadataJson || '' };
+const key = recommendationKey_(item);
+snapshot.dismissed = Array.isArray(snapshot.dismissed) ? snapshot.dismissed : [];
+if (snapshot.dismissed.some(d => d.key === key)) return { dismissed: snapshot.dismissed.length };
+const meta = parseMetadata_(item);
+snapshot.dismissed.push({ key: key, tk: titleKey_(item.title), type: type, title: item.title, genres: recommendationGenres_(item).slice(0, 12), tags: recommendationTags_(meta).map(t => [t.name, t.rank]), at: new Date().toISOString() });
+if (snapshot.dismissed.length > 2000) snapshot.dismissed = snapshot.dismissed.slice(-2000);
+return { dismissed: snapshot.dismissed.length };
+}
+function clearDismissed() { snapshot.dismissed = []; return { dismissed: 0 }; }
+async function clearRecommendationCache() { await pcache.clear(); return { ok: true }; }
+
+// ---- 2) Eksik etiketleri tamamlama (kayit tarihini/aktivite gunlugunu degistirmez) ----
+function needsTags_(item) {
+if (!['anime', 'manga'].includes(item.type)) return false;
+return parseMetadata_(item).anilistTags === undefined;
+}
+function getRecommendationState() {
+return { dismissed: (Array.isArray(snapshot.dismissed) ? snapshot.dismissed : []).length, tagsPending: snapshot.items.filter(needsTags_).length };
+}
+async function backfillAnilistTags(limit) {
+limit = Math.max(1, Math.min(20, Number(limit) || 12));
+const pending = snapshot.items.filter(needsTags_);
+const hasId = x => { const m = parseMetadata_(x); return Boolean(Number(m.anilistId) || Number(m.malId || (['jikan', 'mal'].includes(x.source) ? x.sourceId : 0))); };
+const withId = pending.filter(hasId).slice(0, limit);
+const noId = pending.filter(x => !hasId(x)).slice(0, 4);
+if (!withId.length && !noId.length) return { updated: 0, checked: 0, remaining: 0 };
+const sel = '{id idMal popularity tags{name rank isMediaSpoiler}}';
+const aliases = [], byAlias = {};
+withId.forEach((x, i) => {
+const m = parseMetadata_(x);
+const id = Number(m.anilistId) || 0;
+const mal = Number(m.malId || (['jikan', 'mal'].includes(x.source) ? x.sourceId : 0)) || 0;
+if (id) aliases.push('a' + i + ':Media(id:' + id + ')' + sel);
+else aliases.push('a' + i + ':Media(idMal:' + mal + ',type:' + (x.type === 'anime' ? 'ANIME' : 'MANGA') + ')' + sel);
+byAlias['a' + i] = x;
+});
+let data = {};
+if (aliases.length) {
+try { data = (await anilistRequest_('query{' + aliases.join(' ') + '}', {}, { tolerant: true, nocache: true })) || {}; }
+catch (error) { return { updated: 0, checked: 0, remaining: pending.length, error: true }; }
+}
+let updated = 0, checked = 0;
+const apply = (x, media) => {
+const m = parseMetadata_(x);
+m.anilistTags = media ? alTags_(media.tags) : [];
+if (media) { if (!m.anilistId) m.anilistId = media.id; if (media.popularity) m.anilistPopularity = media.popularity; }
+x.metadataJson = JSON.stringify(m);
+if (media) updated++; else checked++;
+};
+Object.keys(byAlias).forEach(k => apply(byAlias[k], data[k]));
+const Q_TITLE = 'query($s:String,$t:MediaType){Media(search:$s,type:$t){id idMal title{romaji english native} popularity tags{name rank isMediaSpoiler}}}';
+for (const x of noId) {
+let media = null;
+try {
+const found = ((await anilistRequest_(Q_TITLE, { s: x.title, t: x.type === 'anime' ? 'ANIME' : 'MANGA' }, { ttl: 86400 })) || {}).Media;
+if (found) {
+const mine = [x.title, x.originalTitle].concat(parseMetadata_(x).titleAliases || []).map(titleKey_).filter(Boolean);
+const theirs = Object.values(found.title || {}).filter(Boolean).map(titleKey_);
+if (theirs.some(t => mine.includes(t))) media = found;
+}
+} catch (error) { continue; }
+apply(x, media);
+}
+return { updated: updated, checked: checked, remaining: Math.max(0, pending.length - updated - checked) };
+}
+
 function getGeminiRecommendationConfig(){return {configured:Boolean(PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY')),model:PropertiesService.getScriptProperties().getProperty('GEMINI_RECOMMENDATION_MODEL')||'gemini-2.5-flash-lite'};}
 function setGeminiRecommendationKey(key,freeConfirmed){if(freeConfirmed!==true)throw new Error('AI Studio projesinin Free Tier olduğunu doğrulayın.');key=String(key||'').replace(/[\u200B-\u200D\uFEFF]/g,'').trim();if((key.startsWith('\"')&&key.endsWith('\"'))||(key.startsWith("'")&&key.endsWith("'")))key=key.slice(1,-1).trim();if(key.length<16||key.length>512||/\s/.test(key)||/^https?:/i.test(key))throw new Error('API anahtarının tamamını, bağlantı veya boşluk eklemeden yapıştırın.');PropertiesService.getScriptProperties().setProperty('GEMINI_API_KEY',key);return true;}
 function removeGeminiRecommendationKey(){PropertiesService.getScriptProperties().deleteProperty('GEMINI_API_KEY');return true;}
@@ -443,8 +1042,8 @@ return indices.map(i=>ranked[i]);
 
 async function searchRecommendationBooksPage_(query,page){const data=await fetchJson_('https://www.googleapis.com/books/v1/volumes?q='+encodeURIComponent(query)+'&maxResults=12&startIndex='+((page-1)*12)+'&printType=books',{});return (data.items||[]).map(x=>{const v=x.volumeInfo||{};return {type:'book',title:v.title||'',year:yearFromDate_(v.publishedDate),source:'googlebooks',sourceId:String(x.id),externalUrl:v.infoLink||'',imageUrl:v.imageLinks?String(v.imageLinks.thumbnail||'').replace('http://','https://'):'',totalProgress:Number(v.pageCount)||0,metadataJson:JSON.stringify({authors:v.authors||[],categories:v.categories||[],synopsis:v.description||'',isbn:isbnFrom_(v.industryIdentifiers)})};});}
 
-const handlers={getBootstrapData,saveItem,deleteItem,bulkUpdateItems,getActivityPage,setTmdbToken,removeTmdbToken,exportLibrary,createLocalBackup,restoreJsonBackup,importMalXml,getCalendarData,saveReminder,enrichMissingCovers,refreshReleaseData,searchMetadataWithStatus,getPersonalRecommendations,getGeminiRecommendationConfig,setGeminiRecommendationKey,removeGeminiRecommendationKey};
-const mutations=new Set(['saveItem','deleteItem','bulkUpdateItems','restoreJsonBackup','importMalXml','saveReminder','enrichMissingCovers','refreshReleaseData']);
+const handlers={getBootstrapData,saveItem,deleteItem,bulkUpdateItems,getActivityPage,setTmdbToken,removeTmdbToken,exportLibrary,createLocalBackup,restoreJsonBackup,importMalXml,getCalendarData,saveReminder,enrichMissingCovers,refreshReleaseData,searchMetadataWithStatus,getPersonalRecommendations,dismissRecommendation,clearDismissed,clearRecommendationCache,getRecommendationState,backfillAnilistTags,getGeminiRecommendationConfig,setGeminiRecommendationKey,removeGeminiRecommendationKey};
+const mutations=new Set(['saveItem','deleteItem','bulkUpdateItems','restoreJsonBackup','importMalXml','saveReminder','enrichMissingCovers','refreshReleaseData','dismissRecommendation','clearDismissed','backfillAnilistTags']);
 let queue=ready;
 window.MediaVault=Object.freeze({call(fn,...args){if(!Object.hasOwn(handlers,fn))return Promise.reject(new Error('İşlem bulunamadı.'));const run=async()=>{
  await ready;
